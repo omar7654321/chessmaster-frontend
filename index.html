@@ -4546,6 +4546,8 @@
                 }
                 if (appContainer) appContainer.style.display = '';
 
+                initializeBoard();
+
                 const tools = document.getElementById('fenPgnTools');
                 if (tools) tools.classList.add('hidden');
                 const openBtn = document.getElementById('openInAnalysis');
