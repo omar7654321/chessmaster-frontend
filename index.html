@@ -1484,6 +1484,87 @@
             transform: translateY(1px);
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
+
+        .online-play-panel {
+            margin-top: 1.25rem;
+            background: rgba(17, 24, 32, 0.9);
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            border: 1px solid rgba(88, 214, 141, 0.25);
+        }
+
+        .online-play-panel.hidden {
+            display: none !important;
+        }
+
+        .online-section {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .online-field select,
+        .online-section input[type="text"] {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(10, 14, 20, 0.9);
+            color: #ecf0f1;
+            font-size: 0.95rem;
+        }
+
+        .online-field select:focus,
+        .online-section input[type="text"]:focus {
+            outline: none;
+            border-color: #58d68d;
+            box-shadow: 0 0 0 2px rgba(88, 214, 141, 0.25);
+        }
+
+        .online-join-row,
+        .online-share-row {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .online-join-row input,
+        .online-share-row input {
+            flex: 1 1 auto;
+        }
+
+        .online-status {
+            font-size: 0.9rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.5rem;
+            background: rgba(10, 15, 20, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .online-share,
+        .online-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            padding-top: 0.5rem;
+            border-top: 1px dashed rgba(236, 240, 241, 0.2);
+        }
+
+        .online-share.hidden,
+        .online-actions.hidden {
+            display: none !important;
+        }
+
+        .online-actions button {
+            width: 100%;
+        }
+
+        .online-game-meta {
+            font-size: 0.9rem;
+            color: #bdc3c7;
+        }
         .start-card a {
             display: inline-block;
             margin-top: 0.5rem;
@@ -1627,10 +1708,48 @@
     <div id="startScreen" class="start-screen">
         <h2>What would you like to do?</h2>
         <div class="start-grid">
-            <div class="start-card">
+            <div class="start-card" id="onlinePlayCard">
                 <h3>Play Online</h3>
-                <p>Challenge players around the world. (Coming soon)</p>
-                <button id="btnPlayOnline">Coming Soon</button>
+                <p>Challenge players around the world in real time.</p>
+                <button id="btnPlayOnline">Open Online Lobby</button>
+                <div id="onlinePlayPanel" class="online-play-panel hidden">
+                    <div class="online-section">
+                        <label for="onlineUsername">Display Name</label>
+                        <input id="onlineUsername" type="text" placeholder="Guest" maxlength="20">
+                    </div>
+                    <div class="online-section">
+                        <button id="onlineCreateBtn" class="primary">Create Game</button>
+                        <div class="online-field">
+                            <label for="onlineColor">Preferred Color</label>
+                            <select id="onlineColor">
+                                <option value="random">Random</option>
+                                <option value="white">White</option>
+                                <option value="black">Black</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="online-section">
+                        <label for="onlineJoinId">Join Game ID</label>
+                        <div class="online-join-row">
+                            <input id="onlineJoinId" type="text" placeholder="Enter Game ID" maxlength="12">
+                            <button id="onlineJoinBtn">Join</button>
+                        </div>
+                    </div>
+                    <div class="online-status" id="onlineStatus" role="status">Not connected</div>
+                    <div class="online-share hidden" id="onlineShare">
+                        <label for="onlineShareLink">Invite Link</label>
+                        <div class="online-share-row">
+                            <input id="onlineShareLink" type="text" readonly>
+                            <button id="onlineCopyLink">Copy</button>
+                        </div>
+                        <div class="online-game-meta" id="onlineGameMeta"></div>
+                    </div>
+                    <div class="online-actions hidden" id="onlineInGameActions">
+                        <span id="onlineTurnStatus">Waiting for opponent...</span>
+                        <button id="onlineResignBtn" class="danger">Resign</button>
+                        <button id="onlineLeaveBtn">Leave Game</button>
+                    </div>
+                </div>
             </div>
             <div class="start-card">
                 <h3>Play on Same Device</h3>
@@ -5586,30 +5705,43 @@
             function setActiveView(view) {
                 activeView = view;
                 if (view !== 'computer') {
-                    lastNonComputerView = view;
-                }
             }
+            const data = await res.json();
+            const uci = data.bestMove || data.move || data.uci;
+            if (!uci) return null;
+            const coords = uciToCoords(uci.trim());
+            if (!coords) return null;
+            const { fr, fc, tr, tc, promotion } = coords;
+            return { fr, fc, tr, tc, promotion: promotion || 'q' };
+        } catch (err) {
+            console.warn('Stockfish move failed', err);
+            return null;
+        }
+    }
+},
+'random-baseline': {
+    id: 'random-baseline',
+    name: 'Random Baseline',
+    description: 'Chooses a random legal move. Great for testing.',
+    tags: ['casual', 'baseline'],
+    moveDelayMs: 150,
+    async getMove() {
+        const legal = listAllLegalMoves();
+        if (!legal || legal.length === 0) return null;
+        const choice = legal[Math.floor(Math.random() * legal.length)];
+        if (!choice) return null;
+        const [fr, fc, tr, tc] = choice;
+        const piece = gameState.board[fr]?.[fc];
+        let promotion = null;
+        if (piece && piece[1] === 'p' && (tr === 0 || tr === 7)) {
+            promotion = 'q';
+        }
+        return { fr, fc, tr, tc, promotion };
+    }
+}
+};
 
-            const puzzleState = {
-                lastPuzzle: null,
-                backendBase,
-                inFlight: false,
-                solution: [],
-                active: false,
-                heroColor: null,
-                autoPlaying: false,
-                streak: 0,
-                ratingSettled: false,
-                madeMistake: false,
-                playerRating: 1500,
-                lastDelta: 0,
-                ratingHistory: [],
-                currentPuzzleId: null,
-                startTimestamp: null,
-                mistakeMoves: [],
-                attemptRecorded: false,
-                usedHint: false,
-                missedBeforeSuccess: false,
+const aiRegistryOrder = ['stockfish-local', 'random-baseline'];
                 reviewMode: false,
                 reviewActiveEntry: null,
                 reviewNeedsRepeat: false,
