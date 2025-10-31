@@ -2730,6 +2730,8 @@
                 statusType: 'idle',
                 reconnectTimer: null,
                 heartbeatTimer: null,
+                autoLeaveTimer: null,
+                disconnectedAt: null,
                 handshakeComplete: false,
                 pendingMessages: [],
             };
@@ -4855,6 +4857,30 @@
                 }
             }
 
+            function clearOnlineAutoLeaveTimer() {
+                if (onlineState.autoLeaveTimer) {
+                    clearTimeout(onlineState.autoLeaveTimer);
+                    onlineState.autoLeaveTimer = null;
+                }
+            }
+
+            function scheduleOnlineAutoLeave() {
+                clearOnlineAutoLeaveTimer();
+                if (!onlineState.inGame) return;
+                onlineState.autoLeaveTimer = setTimeout(() => {
+                    onlineState.autoLeaveTimer = null;
+                    if (!onlineState.inGame) return;
+                    setOnlineStatus('Disconnected too long. Leaving game.', 'error');
+                    leaveOnlineGame({ reason: 'left' });
+                    onlineState.manualDisconnect = true;
+                    onlineState.pendingAction = null;
+                    onlineState.playerId = null;
+                    onlineState.pendingMessages = [];
+                    localStorage.removeItem(ONLINE_PLAYER_ID_STORAGE_KEY);
+                    cleanupOnlineSocket();
+                }, 60000);
+            }
+
             function setOnlineShareLink(url = '') {
                 const value = url || '';
                 onlineState.shareUrl = value;
@@ -4895,6 +4921,7 @@
                     clearInterval(onlineState.heartbeatTimer);
                     onlineState.heartbeatTimer = null;
                 }
+                clearOnlineAutoLeaveTimer();
                 if (onlineState.socket) {
                     try {
                         onlineState.socket.onopen = null;
@@ -5168,6 +5195,8 @@
                     onlineState.connected = true;
                     onlineState.manualDisconnect = false;
                     onlineState.handshakeComplete = false;
+                    onlineState.disconnectedAt = null;
+                    clearOnlineAutoLeaveTimer();
                     setOnlineStatus('Connected', 'success');
                     const payload = {
                         type: 'hello',
@@ -5189,6 +5218,10 @@
                 ws.onclose = () => {
                     onlineState.connected = false;
                     onlineState.handshakeComplete = false;
+                    if (!onlineState.manualDisconnect) {
+                        onlineState.disconnectedAt = Date.now();
+                        scheduleOnlineAutoLeave();
+                    }
                     if (onlineState.inGame) {
                         setOnlineStatus('Connection lost. Attempting to reconnect…', 'error');
                         onlineState.pendingAction = 'resume';
