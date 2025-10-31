@@ -4871,12 +4871,16 @@
                     onlineState.autoLeaveTimer = null;
                     if (!onlineState.inGame) return;
                     setOnlineStatus('Disconnected too long. Leaving game.', 'error');
+                    sendOnlineMessage({ type: 'leave', gameId: onlineState.gameId });
                     leaveOnlineGame({ reason: 'left' });
                     onlineState.manualDisconnect = true;
                     onlineState.pendingAction = null;
-                    onlineState.playerId = null;
                     onlineState.pendingMessages = [];
-                    localStorage.removeItem(ONLINE_PLAYER_ID_STORAGE_KEY);
+                    if (onlineState.playerId) {
+                        localStorage.removeItem(ONLINE_PLAYER_ID_STORAGE_KEY);
+                    }
+                    onlineState.desiredColor = 'random';
+                    onlineState.shareUrl = '';
                     cleanupOnlineSocket();
                 }, 60000);
             }
@@ -5166,6 +5170,16 @@
                         if (payload.result) {
                             handleOnlineGameOver(payload);
                         }
+                        break;
+                    case 'left':
+                        if (payload.gameId && payload.gameId === onlineState.gameId) {
+                            leaveOnlineGame({ reason: 'left' });
+                            onlineState.manualDisconnect = true;
+                            onlineState.pendingAction = null;
+                            clearOnlineAutoLeaveTimer();
+                            cleanupOnlineSocket();
+                        }
+                        setOnlineStatus('Left the game due to inactivity.', 'info');
                         break;
                     case 'opponent_disconnect':
                         setOnlineStatus('Opponent disconnected. Waiting for reconnection…', 'info');
