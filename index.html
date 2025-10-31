@@ -2890,6 +2890,11 @@
                 const isComputerMode = gameState.mode === 'computer';
                 const humanColor = (gameState.humanSide || 'white')[0];
 
+                if (gameState.mode === 'online' && piece && piece[0] !== (onlineState.assignedColor === 'white' ? 'w' : 'b')) {
+                    clearSelection();
+                    return;
+                }
+
                 if (gameState.selectedPiece) {
                     const [selectedRow, selectedCol] = gameState.selectedPiece;
                     const isValidMove = gameState.validMoves.some(move => move[0] === row && move[1] === col);
@@ -2936,7 +2941,13 @@
                         e.preventDefault();
                         return;
                     }
-                    if (gameState.mode === 'computer') {
+                    if (gameState.mode === 'online') {
+                        const expected = onlineState.assignedColor === 'white' ? 'w' : 'b';
+                        if (p[0] !== expected || onlineState.turn !== onlineState.assignedColor) {
+                            e.preventDefault();
+                            return;
+                        }
+                    } else if (gameState.mode === 'computer') {
                         const humanColorDrag = (gameState.humanSide || 'white')[0];
                         if (p[0] !== humanColorDrag || gameState.currentPlayer[0] !== humanColorDrag) {
                             e.preventDefault();
