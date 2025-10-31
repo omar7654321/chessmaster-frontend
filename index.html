@@ -4520,7 +4520,7 @@
                 return `${boardPart} ${active} ${castle} ${ep} ${half} ${full}`;
             }
 
-            function loadFEN(fen) {
+            function loadFEN(fen, { preserveHistory = false } = {}) {
                 try {
                     const parts = fen.trim().split(/\s+/);
                     if (parts.length < 4) throw new Error('Invalid FEN');
@@ -4573,12 +4573,14 @@
                     }
                     gameState.halfmoveClock = halfStr ? parseInt(halfStr,10) || 0 : 0;
                     // Reset histories upon FEN load
-                    gameState.moveHistory = [];
-                    gameState.gameOver = false;
-                    gameState.repetitionMap = {};
-                    gameState.capturedByWhite = [];
-                    gameState.capturedByBlack = [];
-                    gameState.lastMove = null;
+                    if (!preserveHistory) {
+                        gameState.moveHistory = [];
+                        gameState.gameOver = false;
+                        gameState.repetitionMap = {};
+                        gameState.capturedByWhite = [];
+                        gameState.capturedByBlack = [];
+                        gameState.lastMove = null;
+                    }
                     clearSelection();
                     updateBoardUI();
                     updateMoveHistory();
@@ -4588,7 +4590,9 @@
                     recordRepetition();
                     const fenEl = document.getElementById('fenInput');
                     if (fenEl) fenEl.value = generateFEN();
-                    resetEvaluationGraph();
+                    if (!preserveHistory) {
+                        resetEvaluationGraph();
+                    }
                     updateVariationUI();
                 } catch (e) {
                     alert('Failed to load FEN: ' + e.message);
@@ -4954,7 +4958,7 @@
             function applyOnlineGameStart(payload) {
                 const { gameId, fen, turn, color, white, black } = payload;
                 if (!gameId || !fen) return;
-                loadFEN(fen);
+                loadFEN(fen, { preserveHistory: true });
                 gameState.mode = 'online';
                 onlineState.inGame = true;
                 onlineState.gameId = gameId;
@@ -5021,7 +5025,7 @@
                 }
                 if (fen) {
                     try {
-                        loadFEN(fen);
+                        loadFEN(fen, { preserveHistory: true });
                     } catch (err) {
                         console.warn('Failed to sync board from fen', err);
                     }
