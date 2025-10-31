@@ -4851,10 +4851,26 @@
                 }
             }
 
+            function setOnlineShareLink(url = '') {
+                const value = url || '';
+                onlineState.shareUrl = value;
+                if (onlineShareLink) {
+                    onlineShareLink.value = value;
+                    if (!value) {
+                        onlineShareLink.setAttribute('placeholder', 'Waiting for lobby…');
+                    } else {
+                        onlineShareLink.removeAttribute('placeholder');
+                    }
+                }
+                if (onlineCopyBtn) {
+                    onlineCopyBtn.disabled = !value;
+                }
+            }
+
             function resetOnlineUI() {
                 if (onlineShare) hideElement(onlineShare);
                 if (onlineActions) hideElement(onlineActions);
-                if (onlineShareLink) onlineShareLink.value = '';
+                setOnlineShareLink('');
                 if (onlineGameMeta) onlineGameMeta.textContent = '';
                 if (onlineTurnStatus) onlineTurnStatus.textContent = 'Waiting for opponent...';
                 if (onlineJoinInput) onlineJoinInput.value = '';
@@ -4907,6 +4923,7 @@
                 hideElement(onlineActions);
                 hideElement(onlineShare);
                 onlineGameMeta.textContent = '';
+                setOnlineShareLink('');
                 onlineTurnStatus.textContent = reason === 'finished' ? 'Game over' : 'Waiting for opponent...';
                 updateBoardUI();
                 setOnlineStatus(reason === 'finished' ? 'Game finished' : 'Left the game', 'info');
@@ -4954,8 +4971,7 @@
                 const guestName = black?.name || 'Black';
                 onlineGameMeta.textContent = `${hostName} vs ${guestName}`;
                 const shareUrl = generateOnlineShareUrl(gameId);
-                onlineState.shareUrl = shareUrl;
-                onlineShareLink.value = shareUrl;
+                setOnlineShareLink(shareUrl);
                 setOnlineStatus(`Game started! You are ${onlineState.assignedColor}.`);
                 updatePlayerPanelsForOnline({ white, black });
                 onlineState.pendingAction = null;
@@ -5084,7 +5100,7 @@
                         break;
                     case 'created':
                         setOnlineStatus(`Lobby created. Share ID ${payload.gameId}`, 'success');
-                        onlineShareLink.value = generateOnlineShareUrl(payload.gameId);
+                        setOnlineShareLink(generateOnlineShareUrl(payload.gameId));
                         showElement(onlineShare);
                         onlineState.gameId = payload.gameId;
                         onlineState.assignedColor = payload.color || 'white';
@@ -5194,7 +5210,7 @@
                 sendOnlineMessage({ type: 'create', color: onlineState.desiredColor });
                 setOnlineStatus('Creating lobby…');
                 if (onlineShare) showElement(onlineShare);
-                if (onlineShareLink) onlineShareLink.value = 'Waiting for lobby…';
+                setOnlineShareLink('');
             }
 
             function handleOnlineJoin() {
@@ -5256,9 +5272,13 @@
                 if (onlineLeaveBtn) onlineLeaveBtn.addEventListener('click', handleOnlineLeave);
                 if (onlineCopyBtn) {
                     onlineCopyBtn.addEventListener('click', async () => {
-                        if (!onlineShareLink.value) return;
+                        const link = onlineState.shareUrl;
+                        if (!link) {
+                            setOnlineStatus('Lobby not ready yet.', 'error');
+                            return;
+                        }
                         try {
-                            await navigator.clipboard.writeText(onlineShareLink.value);
+                            await navigator.clipboard.writeText(link);
                             setOnlineStatus('Invite link copied!', 'success');
                             onlineCopyBtn.textContent = 'Copied!';
                             setTimeout(() => { onlineCopyBtn.textContent = 'Copy'; }, 1500);
