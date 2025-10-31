@@ -5926,6 +5926,14 @@
             }
 
             function showPlay() {
+                if (onlineState?.inGame) {
+                    setActiveView('play');
+                    hideElement(startScreen);
+                    ensureAppContainerInBody();
+                    showElement(appContainer);
+                    hideElement(puzzleSection);
+                    return;
+                }
                 setActiveView('play');
                 hideElement(startScreen);
                 ensureAppContainerInBody();
