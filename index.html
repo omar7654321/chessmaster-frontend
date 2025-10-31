@@ -1539,8 +1539,18 @@
             font-size: 0.9rem;
             padding: 0.5rem 0.75rem;
             border-radius: 0.5rem;
-            background: rgba(10, 15, 20, 0.75);
+            background: rgba(44, 62, 80, 0.6);
             border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .online-status.online-status-success {
+            border-color: #58d68d;
+            color: #58d68d;
+        }
+
+        .online-status.online-status-error {
+            border-color: #e74c3c;
+            color: #e74c3c;
         }
 
         .online-share,
@@ -2667,6 +2677,63 @@
                 completedHistoryLoaded: false,
             };
 
+            const ONLINE_PLAYER_ID_STORAGE_KEY = 'chessmasterOnlinePlayerId';
+            const ONLINE_USERNAME_STORAGE_KEY = 'chessmasterOnlineUsername';
+            const backendBase = localStorage.getItem('chessmasterBackend') || 'https://chessmaster-backend-5wwa.onrender.com';
+
+            const storedOnlinePlayerId = localStorage.getItem(ONLINE_PLAYER_ID_STORAGE_KEY) || null;
+            const storedOnlineUsername = localStorage.getItem(ONLINE_USERNAME_STORAGE_KEY) || '';
+
+            const puzzleState = {
+                active: false,
+                attemptRecorded: false,
+                autoPlaying: false,
+                backendBase: '',
+                currentPuzzleId: null,
+                heroColor: null,
+                inFlight: false,
+                lastDelta: 0,
+                lastPuzzle: null,
+                madeMistake: false,
+                missedBeforeSuccess: false,
+                mistakeMoves: [],
+                playerRating: 1500,
+                ratingHistory: [],
+                ratingSettled: false,
+                reviewActiveEntry: null,
+                reviewMode: false,
+                reviewNeedsRepeat: false,
+                solution: [],
+                startTimestamp: null,
+                streak: 0,
+                usedHint: false,
+            };
+
+            const onlineState = {
+                socket: null,
+                connecting: false,
+                connected: false,
+                playerId: storedOnlinePlayerId,
+                username: storedOnlineUsername,
+                desiredColor: 'random',
+                assignedColor: null,
+                gameId: null,
+                turn: 'white',
+                shareUrl: '',
+                pendingAction: null,
+                remoteApplying: false,
+                awaitingAckUci: null,
+                lastActivityAt: 0,
+                manualDisconnect: false,
+                inGame: false,
+                status: 'Not connected',
+                statusType: 'idle',
+                reconnectTimer: null,
+                heartbeatTimer: null,
+                handshakeComplete: false,
+                pendingMessages: [],
+            };
+
             const whitePlayerPanel = document.getElementById('whitePlayer');
             const blackPlayerPanel = document.getElementById('blackPlayer');
 
@@ -2800,10 +2867,23 @@
                 // Refresh variations UI if visible
                 updateVariationUI();
                 onAnalysisPositionChanged();
+
+                if (!gameState.executingPGN && gameState.mode === 'online' && !onlineState.remoteApplying) {
+                    const promotion = (piece[1] === 'p' && (toRow === 0 || toRow === 7)) ? (gameState.board[toRow][toCol]?.[1] || 'q') : null;
+                    sendOnlineMove(fromRow, fromCol, toRow, toCol, promotion);
+                }
+            }
+
+            function isOnlinePlayersTurn() {
+                if (gameState.mode !== 'online') return true;
+                if (!onlineState.inGame) return false;
+                const expectedColor = onlineState.assignedColor === 'white' ? 'w' : 'b';
+                return onlineState.turn && onlineState.turn[0] === expectedColor;
             }
 
             function handleSquareClick(row, col) {
                 if (gameState.gameOver) return;
+                if (!isOnlinePlayersTurn()) return;
                 const piece = gameState.board[row][col];
                 const isComputerMode = gameState.mode === 'computer';
                 const humanColor = (gameState.humanSide || 'white')[0];
@@ -2818,7 +2898,7 @@
                         return;
                     }
 
-                    if (piece && piece[0] === gameState.currentPlayer[0] && (!isComputerMode || piece[0] === humanColor)) {
+                    if (piece && piece[0] === gameState.currentPlayer[0] && (!isComputerMode || piece[0] === humanColor) && isOnlinePlayersTurn()) {
                         selectPiece(row, col);
                         return;
                     }
@@ -2841,6 +2921,10 @@
                 piece.draggable = true;
                 piece.addEventListener('dragstart', (e) => {
                     if (gameState.gameOver) return;
+                    if (!isOnlinePlayersTurn()) {
+                        e.preventDefault();
+                        return;
+                    }
                     const parent = piece.parentElement;
                     if (!parent) return;
                     const fromRow = parseInt(parent.dataset.row, 10);
@@ -2856,7 +2940,7 @@
                             e.preventDefault();
                             return;
                         }
-                    } else if (gameState.currentPlayer[0] !== p[0]) {
+                    } else if (gameState.currentPlayer[0] !== p[0] || !isOnlinePlayersTurn()) {
                         e.preventDefault();
                         return;
                     }
@@ -4722,7 +4806,470 @@
             if (legacyAnalyzeBtn) legacyAnalyzeBtn.addEventListener('click', () => enterAnalysisMode());
             const legacyLocalBtn = document.getElementById('btnLocalPlay');
             if (legacyLocalBtn) legacyLocalBtn.addEventListener('click', enterLocalPlayMode);
-            document.getElementById('btnPlayOnline').addEventListener('click', () => alert('Play Online: Coming soon'));
+            const onlineToggleBtn = document.getElementById('btnPlayOnline');
+            const onlinePanel = document.getElementById('onlinePlayPanel');
+            const onlineUsernameInput = document.getElementById('onlineUsername');
+            const onlineCreateBtn = document.getElementById('onlineCreateBtn');
+            const onlineColorSelect = document.getElementById('onlineColor');
+            const onlineJoinInput = document.getElementById('onlineJoinId');
+            const onlineJoinBtn = document.getElementById('onlineJoinBtn');
+            const onlineStatus = document.getElementById('onlineStatus');
+            const onlineShare = document.getElementById('onlineShare');
+            const onlineShareLink = document.getElementById('onlineShareLink');
+            const onlineGameMeta = document.getElementById('onlineGameMeta');
+            const onlineActions = document.getElementById('onlineInGameActions');
+            const onlineTurnStatus = document.getElementById('onlineTurnStatus');
+            const onlineCopyBtn = document.getElementById('onlineCopyLink');
+            const onlineResignBtn = document.getElementById('onlineResignBtn');
+            const onlineLeaveBtn = document.getElementById('onlineLeaveBtn');
+
+            function resolveOnlineWsUrl() {
+                try {
+                    const base = backendBase ? backendBase.replace(/\/$/, '') : window.location.origin;
+                    const url = new URL(base);
+                    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+                    url.pathname = '/ws';
+                    return url.toString();
+                } catch (err) {
+                    const fallback = window.location.origin.replace(/^http/, 'ws');
+                    return `${fallback}/ws`;
+                }
+            }
+
+            const ONLINE_WS_URL = resolveOnlineWsUrl();
+
+            function setOnlineStatus(text, type = 'info') {
+                onlineState.status = text;
+                onlineState.statusType = type;
+                if (!onlineStatus) return;
+                onlineStatus.textContent = text;
+                onlineStatus.classList.remove('online-status-error', 'online-status-success');
+                if (type === 'error') {
+                    onlineStatus.classList.add('online-status-error');
+                } else if (type === 'success') {
+                    onlineStatus.classList.add('online-status-success');
+                }
+            }
+
+            function resetOnlineUI() {
+                if (onlineShare) hideElement(onlineShare);
+                if (onlineActions) hideElement(onlineActions);
+                if (onlineShareLink) onlineShareLink.value = '';
+                if (onlineGameMeta) onlineGameMeta.textContent = '';
+                if (onlineTurnStatus) onlineTurnStatus.textContent = 'Waiting for opponent...';
+                if (onlineJoinInput) onlineJoinInput.value = '';
+            }
+
+            function ensureOnlinePanelVisible() {
+                if (!onlinePanel) return;
+                onlinePanel.classList.remove('hidden');
+            }
+
+            function hideOnlinePanel() {
+                if (!onlinePanel) return;
+                onlinePanel.classList.add('hidden');
+            }
+
+            function cleanupOnlineSocket({ allowReconnect = false } = {}) {
+                if (onlineState.heartbeatTimer) {
+                    clearInterval(onlineState.heartbeatTimer);
+                    onlineState.heartbeatTimer = null;
+                }
+                if (onlineState.socket) {
+                    try {
+                        onlineState.socket.onopen = null;
+                        onlineState.socket.onmessage = null;
+                        onlineState.socket.onclose = null;
+                        onlineState.socket.onerror = null;
+                        onlineState.socket.close();
+                    } catch (err) {
+                        console.warn('Error closing online socket', err);
+                    }
+                }
+                onlineState.socket = null;
+                onlineState.connected = false;
+                onlineState.connecting = false;
+                onlineState.awaitingAckUci = null;
+                onlineState.remoteApplying = false;
+                onlineState.manualDisconnect = !allowReconnect;
+                if (onlineState.reconnectTimer) {
+                    clearTimeout(onlineState.reconnectTimer);
+                    onlineState.reconnectTimer = null;
+                }
+            }
+
+            function leaveOnlineGame({ reason = 'left' } = {}) {
+                if (!onlineState.inGame) return;
+                onlineState.inGame = false;
+                onlineState.gameId = null;
+                onlineState.assignedColor = null;
+                onlineState.turn = 'white';
+                hideElement(onlineActions);
+                hideElement(onlineShare);
+                onlineGameMeta.textContent = '';
+                onlineTurnStatus.textContent = reason === 'finished' ? 'Game over' : 'Waiting for opponent...';
+                updateBoardUI();
+                setOnlineStatus(reason === 'finished' ? 'Game finished' : 'Left the game', 'info');
+                if (gameState.mode === 'online') {
+                    gameState.mode = 'local';
+                    resetPlayerPanels();
+                }
+                onlineState.pendingAction = null;
+            }
+
+            function resetPlayerPanels() {
+                const whitePanel = document.getElementById('whitePlayer');
+                const blackPanel = document.getElementById('blackPlayer');
+                if (whitePanel) {
+                    const nameEl = whitePanel.querySelector('.player-name');
+                    const statusEl = whitePanel.querySelector('.player-status');
+                    if (nameEl) nameEl.textContent = playerPanelDefaults.white.name;
+                    if (statusEl) statusEl.textContent = playerPanelDefaults.white.status;
+                }
+                if (blackPanel) {
+                    const nameEl = blackPanel.querySelector('.player-name');
+                    const statusEl = blackPanel.querySelector('.player-status');
+                    if (nameEl) nameEl.textContent = playerPanelDefaults.black.name;
+                    if (statusEl) statusEl.textContent = playerPanelDefaults.black.status;
+                }
+            }
+
+            function applyOnlineGameStart(payload) {
+                const { gameId, fen, turn, color, white, black } = payload;
+                if (!gameId || !fen) return;
+                loadFEN(fen);
+                gameState.mode = 'online';
+                onlineState.inGame = true;
+                onlineState.gameId = gameId;
+                onlineState.assignedColor = color || 'white';
+                onlineState.turn = turn || 'white';
+                onlineTurnStatus.textContent = turn === onlineState.assignedColor ? 'Your move' : 'Opponent thinking';
+                showElement(onlineActions);
+                showElement(onlineShare);
+                const startPanel = document.getElementById('startScreen');
+                if (startPanel && !startPanel.classList.contains('hidden')) {
+                    showPlay();
+                }
+                const hostName = white?.name || 'White';
+                const guestName = black?.name || 'Black';
+                onlineGameMeta.textContent = `${hostName} vs ${guestName}`;
+                const shareUrl = generateOnlineShareUrl(gameId);
+                onlineState.shareUrl = shareUrl;
+                onlineShareLink.value = shareUrl;
+                setOnlineStatus(`Game started! You are ${onlineState.assignedColor}.`);
+                updatePlayerPanelsForOnline({ white, black });
+                onlineState.pendingAction = null;
+            }
+
+            function generateOnlineShareUrl(gameId) {
+                try {
+                    const base = new URL(window.location.href);
+                    base.hash = '';
+                    base.search = '';
+                    base.pathname = base.pathname.replace(/index\.html$/, '').replace(/\/$/, '/');
+                    base.searchParams.set('gameId', gameId);
+                    return base.toString();
+                } catch (err) {
+                    return `${window.location.origin}?gameId=${gameId}`;
+                }
+            }
+
+            function updatePlayerPanelsForOnline({ white, black }) {
+                const whitePanel = document.getElementById('whitePlayer');
+                const blackPanel = document.getElementById('blackPlayer');
+                if (whitePanel) {
+                    whitePanel.querySelector('.player-name').textContent = white?.name || 'White Player';
+                    whitePanel.querySelector('.player-status').textContent = white?.playerId === onlineState.playerId ? 'You' : 'Opponent';
+                }
+                if (blackPanel) {
+                    blackPanel.querySelector('.player-name').textContent = black?.name || 'Black Player';
+                    blackPanel.querySelector('.player-status').textContent = black?.playerId === onlineState.playerId ? 'You' : 'Opponent';
+                }
+            }
+
+            function applyOnlineMove(payload) {
+                const { uci, turn, fen } = payload;
+                if (!uci) return;
+                const coords = uciToCoords(uci);
+                if (!coords) {
+                    console.warn('Unable to parse remote move', uci);
+                    return;
+                }
+                onlineState.remoteApplying = true;
+                try {
+                    movePiece(coords.fr, coords.fc, coords.tr, coords.tc, { preserveRedo: true });
+                } catch (err) {
+                    console.warn('Failed to apply remote move', err);
+                } finally {
+                    onlineState.remoteApplying = false;
+                }
+                if (fen) {
+                    try {
+                        loadFEN(fen);
+                    } catch (err) {
+                        console.warn('Failed to sync board from fen', err);
+                    }
+                }
+                onlineState.turn = turn || (onlineState.turn === 'white' ? 'black' : 'white');
+                onlineTurnStatus.textContent = onlineState.turn === onlineState.assignedColor ? 'Your move' : 'Opponent thinking';
+            }
+
+            function handleOnlineGameOver(payload) {
+                const { result, reason } = payload || {};
+                setOnlineStatus(`Game over: ${result || reason || 'completed'}`, 'success');
+                onlineTurnStatus.textContent = 'Game over';
+                leaveOnlineGame({ reason: 'finished' });
+            }
+
+            function flushOnlineQueue() {
+                if (!onlineState.pendingMessages.length) return;
+                if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) return;
+                while (onlineState.pendingMessages.length) {
+                    const payload = onlineState.pendingMessages.shift();
+                    try {
+                        onlineState.socket.send(JSON.stringify(payload));
+                    } catch (err) {
+                        console.warn('Failed to send queued message', err);
+                        break;
+                    }
+                }
+            }
+
+            function sendOnlineMessage(data) {
+                if (!data || typeof data !== 'object') return;
+                if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) {
+                    onlineState.pendingMessages.push(data);
+                    return;
+                }
+                try {
+                    onlineState.socket.send(JSON.stringify(data));
+                } catch (err) {
+                    console.warn('Failed to send message', err);
+                }
+            }
+
+            function sendOnlineMove(fr, fc, tr, tc, promotion) {
+                if (!onlineState.inGame || onlineState.turn !== onlineState.assignedColor) return;
+                const uci = moveToUci(fr, fc, tr, tc, promotion);
+                onlineState.awaitingAckUci = uci;
+                sendOnlineMessage({
+                    type: 'move',
+                    gameId: onlineState.gameId,
+                    playerId: onlineState.playerId,
+                    uci,
+                });
+            }
+
+            function handleOnlineMessage(event) {
+                let payload = null;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (err) {
+                    console.warn('Invalid online message', event.data);
+                    return;
+                }
+                if (!payload || typeof payload.type !== 'string') return;
+                switch (payload.type) {
+                    case 'hello':
+                        onlineState.playerId = payload.playerId;
+                        if (onlineState.playerId) {
+                            localStorage.setItem(ONLINE_PLAYER_ID_STORAGE_KEY, onlineState.playerId);
+                        }
+                        onlineState.handshakeComplete = true;
+                        flushOnlineQueue();
+                        setOnlineStatus('Connected to online service', 'success');
+                        if (onlineState.pendingAction === 'resume' && payload.gameId) {
+                            sendOnlineMessage({ type: 'join', gameId: payload.gameId });
+                        }
+                        break;
+                    case 'created':
+                        setOnlineStatus(`Lobby created. Share ID ${payload.gameId}`, 'success');
+                        onlineShareLink.value = generateOnlineShareUrl(payload.gameId);
+                        showElement(onlineShare);
+                        onlineState.gameId = payload.gameId;
+                        onlineState.assignedColor = payload.color || 'white';
+                        break;
+                    case 'start':
+                        applyOnlineGameStart(payload);
+                        break;
+                    case 'move':
+                        if (onlineState.awaitingAckUci && payload.uci === onlineState.awaitingAckUci) {
+                            onlineState.awaitingAckUci = null;
+                            onlineState.turn = payload.turn || (onlineState.turn === 'white' ? 'black' : 'white');
+                            if (payload.fen) {
+                                try {
+                                    loadFEN(payload.fen);
+                                } catch (err) {
+                                    console.warn('Failed to sync board from ack fen', err);
+                                }
+                            }
+                            onlineTurnStatus.textContent = onlineState.turn === onlineState.assignedColor ? 'Your move' : 'Opponent thinking';
+                        } else {
+                            applyOnlineMove(payload);
+                        }
+                        break;
+                    case 'game_over':
+                        handleOnlineGameOver(payload);
+                        break;
+                    case 'resume':
+                        applyOnlineGameStart(payload);
+                        if (Array.isArray(payload.moves)) {
+                            payload.moves.forEach((move) => applyOnlineMove({ uci: move.uci, turn: payload.turn, fen: move.fenAfter }));
+                        }
+                        if (payload.result) {
+                            handleOnlineGameOver(payload);
+                        }
+                        break;
+                    case 'opponent_disconnect':
+                        setOnlineStatus('Opponent disconnected. Waiting for reconnection…', 'info');
+                        if (onlineTurnStatus) onlineTurnStatus.textContent = 'Opponent disconnected';
+                        break;
+                    case 'ping':
+                        sendOnlineMessage({ type: 'pong' });
+                        break;
+                    case 'error':
+                        setOnlineStatus(payload.msg || 'Server error', 'error');
+                        break;
+                    default:
+                        console.warn('Unhandled online payload', payload);
+                }
+            }
+
+            function connectOnlineSocket() {
+                if (onlineState.connecting || onlineState.connected) return;
+                cleanupOnlineSocket({ allowReconnect: true });
+                setOnlineStatus('Connecting…');
+                onlineState.connecting = true;
+                const ws = new WebSocket(ONLINE_WS_URL);
+                onlineState.socket = ws;
+
+                ws.onopen = () => {
+                    onlineState.connecting = false;
+                    onlineState.connected = true;
+                    onlineState.manualDisconnect = false;
+                    onlineState.handshakeComplete = false;
+                    setOnlineStatus('Connected', 'success');
+                    const payload = {
+                        type: 'hello',
+                        playerId: onlineState.playerId,
+                        username: onlineState.username || null,
+                        gameId: onlineState.gameId || null,
+                    };
+                    sendOnlineMessage(payload);
+                    flushOnlineQueue();
+                };
+
+                ws.onmessage = handleOnlineMessage;
+
+                ws.onerror = (err) => {
+                    console.warn('Online socket error', err);
+                    setOnlineStatus('Connection error', 'error');
+                };
+
+                ws.onclose = () => {
+                    onlineState.connected = false;
+                    onlineState.handshakeComplete = false;
+                    if (onlineState.inGame) {
+                        setOnlineStatus('Connection lost. Attempting to reconnect…', 'error');
+                        onlineState.pendingAction = 'resume';
+                    }
+                    if (onlineState.manualDisconnect) {
+                        setOnlineStatus('Disconnected');
+                        cleanupOnlineSocket();
+                        return;
+                    }
+                    setOnlineStatus('Disconnected. Retrying…', 'error');
+                    onlineState.reconnectTimer = setTimeout(connectOnlineSocket, 3000);
+                };
+            }
+
+            function ensureOnlineConnection() {
+                if (onlineState.connected || onlineState.connecting) return;
+                connectOnlineSocket();
+            }
+
+            function handleOnlineCreate() {
+                ensureOnlineConnection();
+                onlineState.desiredColor = onlineColorSelect?.value || 'random';
+                sendOnlineMessage({ type: 'create', color: onlineState.desiredColor });
+                setOnlineStatus('Creating lobby…');
+                if (onlineShare) showElement(onlineShare);
+                if (onlineShareLink) onlineShareLink.value = 'Waiting for lobby…';
+            }
+
+            function handleOnlineJoin() {
+                ensureOnlineConnection();
+                const gameId = onlineJoinInput.value.trim().toUpperCase();
+                if (!gameId) {
+                    setOnlineStatus('Enter a game ID to join', 'error');
+                    return;
+                }
+                sendOnlineMessage({ type: 'join', gameId });
+                setOnlineStatus(`Joining game ${gameId}…`);
+            }
+
+            function handleOnlineResign() {
+                if (!onlineState.inGame) return;
+                sendOnlineMessage({ type: 'resign', gameId: onlineState.gameId });
+                setOnlineStatus('You resigned', 'info');
+                leaveOnlineGame({ reason: 'finished' });
+            }
+
+            function handleOnlineLeave() {
+                leaveOnlineGame({ reason: 'left' });
+                cleanupOnlineSocket();
+                hideOnlinePanel();
+                setOnlineStatus('Not connected');
+                resetOnlineUI();
+                onlineState.manualDisconnect = true;
+            }
+
+            function initializeOnlineUI() {
+                if (!onlineToggleBtn) return;
+                onlineToggleBtn.addEventListener('click', () => {
+                    if (!onlinePanel) return;
+                    if (onlinePanel.classList.contains('hidden')) {
+                        ensureOnlinePanelVisible();
+                        ensureOnlineConnection();
+                    } else {
+                        hideOnlinePanel();
+                        cleanupOnlineSocket();
+                    }
+                });
+
+                if (onlineUsernameInput) {
+                    if (storedOnlineUsername) {
+                        onlineUsernameInput.value = storedOnlineUsername;
+                    }
+                    onlineUsernameInput.addEventListener('change', () => {
+                        onlineState.username = onlineUsernameInput.value.trim();
+                        localStorage.setItem(ONLINE_USERNAME_STORAGE_KEY, onlineState.username);
+                        if (onlineState.connected) {
+                            sendOnlineMessage({ type: 'hello', playerId: onlineState.playerId, username: onlineState.username });
+                        }
+                    });
+                }
+
+                if (onlineCreateBtn) onlineCreateBtn.addEventListener('click', handleOnlineCreate);
+                if (onlineJoinBtn) onlineJoinBtn.addEventListener('click', handleOnlineJoin);
+                if (onlineResignBtn) onlineResignBtn.addEventListener('click', handleOnlineResign);
+                if (onlineLeaveBtn) onlineLeaveBtn.addEventListener('click', handleOnlineLeave);
+                if (onlineCopyBtn) {
+                    onlineCopyBtn.addEventListener('click', async () => {
+                        if (!onlineShareLink.value) return;
+                        try {
+                            await navigator.clipboard.writeText(onlineShareLink.value);
+                            setOnlineStatus('Invite link copied!', 'success');
+                            onlineCopyBtn.textContent = 'Copied!';
+                            setTimeout(() => { onlineCopyBtn.textContent = 'Copy'; }, 1500);
+                        } catch (err) {
+                            setOnlineStatus('Unable to copy invite link', 'error');
+                        }
+                    });
+                }
+            }
+
+            initializeOnlineUI();
             document.getElementById('btnAnalyzeWithComputer').addEventListener('click', () => {
                 window.location.hash = '#analysis-engine';
             });
@@ -5432,9 +5979,6 @@
                     hideEngineVisuals();
                 }
             }
-
-            const backendBase = localStorage.getItem('chessmasterBackend') || 'https://chessmaster-backend-5wwa.onrender.com';
-
             const completedHistory = {
                 entries: [],
                 loading: false,
@@ -5705,48 +6249,9 @@
             function setActiveView(view) {
                 activeView = view;
                 if (view !== 'computer') {
+                    lastNonComputerView = view;
+                }
             }
-            const data = await res.json();
-            const uci = data.bestMove || data.move || data.uci;
-            if (!uci) return null;
-            const coords = uciToCoords(uci.trim());
-            if (!coords) return null;
-            const { fr, fc, tr, tc, promotion } = coords;
-            return { fr, fc, tr, tc, promotion: promotion || 'q' };
-        } catch (err) {
-            console.warn('Stockfish move failed', err);
-            return null;
-        }
-    }
-},
-'random-baseline': {
-    id: 'random-baseline',
-    name: 'Random Baseline',
-    description: 'Chooses a random legal move. Great for testing.',
-    tags: ['casual', 'baseline'],
-    moveDelayMs: 150,
-    async getMove() {
-        const legal = listAllLegalMoves();
-        if (!legal || legal.length === 0) return null;
-        const choice = legal[Math.floor(Math.random() * legal.length)];
-        if (!choice) return null;
-        const [fr, fc, tr, tc] = choice;
-        const piece = gameState.board[fr]?.[fc];
-        let promotion = null;
-        if (piece && piece[1] === 'p' && (tr === 0 || tr === 7)) {
-            promotion = 'q';
-        }
-        return { fr, fc, tr, tc, promotion };
-    }
-}
-};
-
-const aiRegistryOrder = ['stockfish-local', 'random-baseline'];
-                reviewMode: false,
-                reviewActiveEntry: null,
-                reviewNeedsRepeat: false,
-                mistakeRecordedForCurrent: false,
-            };
 
             const ratingTrendState = {
                 canvas: document.getElementById('puzzleRatingTrend'),
@@ -7398,9 +7903,21 @@ const aiRegistryOrder = ['stockfish-local', 'random-baseline'];
 
             function applyHashNavigation() {
                 const hash = window.location.hash.replace('#', '');
+                const params = new URLSearchParams(window.location.search);
+                const inviteGameId = params.get('gameId');
+                if (inviteGameId && !onlineState.inGame) {
+                    ensureOnlinePanelVisible();
+                    ensureOnlineConnection();
+                    if (onlineJoinInput) onlineJoinInput.value = inviteGameId;
+                    sendOnlineMessage({ type: 'join', gameId: inviteGameId.replace(/[^A-Z0-9]/gi, '').toUpperCase() });
+                    setOnlineStatus(`Joining game ${inviteGameId}…`);
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                }
                 if (hash === 'play') {
                     hidePuzzleBoard();
                     showPlay();
+                    ensureGameHistoryVisible();
+                    return;
                 } else if (hash === 'computer') {
                     showComputer();
                 } else if (hash === 'analysis') {
