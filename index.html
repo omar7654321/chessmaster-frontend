@@ -3805,7 +3805,20 @@
             }
 
             function movePiece(fromRow, fromCol, toRow, toCol, options) {
-                const preserveRedo = options && options.preserveRedo === true;
+                const opts = options || {};
+                const preserveRedo = opts.preserveRedo === true;
+
+                if (!onlineState.remoteApplying && gameState.mode === 'online') {
+                    const expected = onlineState.assignedColor === 'white' ? 'w' : 'b';
+                    const pieceAtSource = gameState.board[fromRow][fromCol];
+                    if (!pieceAtSource || pieceAtSource[0] !== expected) {
+                        return;
+                    }
+                    if (onlineState.turn !== onlineState.assignedColor) {
+                        return;
+                    }
+                }
+
                 // Capture future tail (for variations) BEFORE altering history
                 const branchStartPlyPre = gameState.moveHistory.length; // ply index before this move
                 let futureTailSANPre = [];
