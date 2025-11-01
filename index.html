@@ -4074,6 +4074,13 @@
 
                 onAnalysisPositionChanged();
 
+                if (!gameState.executingPGN && gameState.mode === 'online' && !onlineState.remoteApplying) {
+                    const promotion = (piece[1] === 'p' && (toRow === 0 || toRow === 7))
+                        ? (gameState.board[toRow][toCol]?.[1] || 'q')
+                        : null;
+                    sendOnlineMove(fromRow, fromCol, toRow, toCol, promotion);
+                }
+
                 // No extra record here, already recorded above
             }
 
