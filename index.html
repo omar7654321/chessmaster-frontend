@@ -3807,8 +3807,9 @@
             }
 
             function movePiece(fromRow, fromCol, toRow, toCol, options) {
-                const opts = options || {};
+                const opts = (options && typeof options === 'object') ? options : {};
                 const preserveRedo = opts.preserveRedo === true;
+                const forcedPromotion = typeof opts.promotionChoice === 'string' ? opts.promotionChoice.toLowerCase() : null;
 
                 if (!onlineState.remoteApplying && gameState.mode === 'online') {
                     const expected = onlineState.assignedColor === 'white' ? 'w' : 'b';
@@ -3892,12 +3893,23 @@
                     const promoteRow = color === 'w' ? 0 : 7;
                     if (toRow === promoteRow) {
                         isPromotion = true;
-                        if (gameState.replayMode && gameState.replayPromotionChoice) {
+                        const allowedPromotions = ['q','r','b','n'];
+                        const resolvedPromotion = allowedPromotions.includes(forcedPromotion) ? forcedPromotion : null;
+                        if (resolvedPromotion) {
+                            const promoPiece = color + resolvedPromotion;
+                            gameState.board[toRow][toCol] = promoPiece;
+                            promotionPiece = promoPiece;
+                        } else if (gameState.replayMode && gameState.replayPromotionChoice) {
                             // Auto-apply promotion for replay
                             const choice = gameState.replayPromotionChoice.toLowerCase();
                             const promoPiece = color + (['q','r','b','n'].includes(choice) ? choice : 'q');
                             gameState.board[toRow][toCol] = promoPiece;
                             gameState.replayPromotionChoice = null;
+                            promotionPiece = promoPiece;
+                        } else if (onlineState.remoteApplying) {
+                            const promoPiece = color + (allowedPromotions.includes(forcedPromotion) ? forcedPromotion : 'q');
+                            gameState.board[toRow][toCol] = promoPiece;
+                            promotionPiece = promoPiece;
                         } else {
                             // Store pending move context and show modal; do not finalize or switch turn yet.
                             gameState.pendingMove = {
@@ -5089,7 +5101,10 @@
                 }
                 onlineState.remoteApplying = true;
                 try {
-                    movePiece(coords.fr, coords.fc, coords.tr, coords.tc, { preserveRedo: true });
+                    movePiece(coords.fr, coords.fc, coords.tr, coords.tc, {
+                        preserveRedo: true,
+                        promotionChoice: coords.promotion,
+                    });
                 } catch (err) {
                     console.warn('Failed to apply remote move', err);
                 } finally {
