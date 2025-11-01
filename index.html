@@ -5926,19 +5926,14 @@
             }
 
             function showPlay() {
-                if (onlineState?.inGame) {
-                    setActiveView('play');
-                    hideElement(startScreen);
-                    ensureAppContainerInBody();
-                    showElement(appContainer);
-                    hideElement(puzzleSection);
-                    return;
-                }
+                const inOnlineGame = Boolean(onlineState?.inGame);
+
                 setActiveView('play');
                 hideElement(startScreen);
                 ensureAppContainerInBody();
                 showElement(appContainer);
                 hideElement(puzzleSection);
+
                 const newGameBtn = getEl('newGame');
                 showElement(newGameBtn);
                 const boardControls = getEl('boardControls');
@@ -5946,15 +5941,19 @@
                 const puzzleControls = getEl('puzzleControls');
                 hideElement(puzzleControls);
                 hidePuzzleBoard();
-                exitComputerMode();
-                setAnalysisEnabled(false, { hidePanel: true });
-                hideElement(getEl('analysisPanel'));
-                hideElement(getEl('analysisButtons'));
-                hideElement(getEl('analyzeWithEngineGlobal'));
-                hideEngineVisuals();
-                hidePgnVariationsContainer();
-                hideElement(getEl('fenPgnTools'));
-                enterLocalPlayMode();
+
+                if (!inOnlineGame) {
+                    exitComputerMode();
+                    setAnalysisEnabled(false, { hidePanel: true });
+                    hideElement(getEl('analysisPanel'));
+                    hideElement(getEl('analysisButtons'));
+                    hideElement(getEl('analyzeWithEngineGlobal'));
+                    hideEngineVisuals();
+                    hidePgnVariationsContainer();
+                    hideElement(getEl('fenPgnTools'));
+                    enterLocalPlayMode();
+                }
+
                 ensureGameHistoryVisible();
             }
 
