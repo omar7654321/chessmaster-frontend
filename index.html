@@ -3313,6 +3313,10 @@
                 gameState.pendingMove = null;
                 closePromotionModal();
 
+                if (!gameState.executingPGN && gameState.mode === 'online' && !onlineState.remoteApplying) {
+                    sendOnlineMove(pm.fromRow, pm.fromCol, pm.toRow, pm.toCol, promoPiece[1]);
+                }
+
                 if (!gameState.executingPGN && puzzleState.active && !puzzleState.autoPlaying) {
                     handlePuzzlePlayerMove(pm.fromRow, pm.fromCol, pm.toRow, pm.toCol, promoPiece[1]);
                 }
