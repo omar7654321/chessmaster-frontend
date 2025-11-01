@@ -2689,7 +2689,7 @@
                 active: false,
                 attemptRecorded: false,
                 autoPlaying: false,
-                backendBase,
+                backendBase: backendBase,
                 currentPuzzleId: null,
                 heroColor: null,
                 inFlight: false,
@@ -6078,16 +6078,1943 @@
                 if (loadRequest) {
                     const { fen, pgn } = loadRequest;
                     if (fen) {
-                        try {
-                            loadFEN(fen, { preserveHistory: true });
-                        } catch (err) {
-                            console.warn('Failed to load analysis position', err);
+                        const fenInput = document.getElementById('fenInput');
+                        if (fenInput) fenInput.value = fen;
+                        loadFEN(fen);
+                    }
+                    if (pgn) {
+                        const pgnArea = document.getElementById('pgnInput');
+                        if (pgnArea) {
+                            pgnArea.value = pgn;
+                            pgnLoad(pgn);
+                            gameState.history = [];
+                            gameState.redoHistory = [];
+                            playSANSequence(gameState.pgnMoves);
+                            gameState.pgnIndex = gameState.pgnMoves.length;
+                            gameState.pgnSynced = true;
                         }
+                    }
+                    updateBoardUI();
+                    updateMoveHistory();
+                    updateCapturedUI();
+                    updatePlayerIndicators();
+                    updateGameStatus();
+                    updateVariationUI();
+                    if (engineRequested) {
+                        if (!analysisState.enabled) {
+                            setAnalysisEnabled(true);
+                        }
+                        if (analysisState.enabled) {
+                            scheduleAnalysis(150);
+                        }
+                        showElement(analysisButtons);
+                        showElement(analyzeEngineBtn);
+                        showElement(analysisPanel);
+                        showEngineVisuals();
+                    } else {
+                        setAnalysisEnabled(false, { hidePanel: false });
+                        hideElement(analysisButtons);
+                        hideElement(analyzeEngineBtn);
+                        if (analysisPanel) showElement(analysisPanel);
+                        hideEngineVisuals();
+                    }
+                    const redoHistoryTailClone = [...gameState.redoHistory];
+                    pendingAnalysisLoad = null;
+                } else if (!engineRequested) {
+                    setAnalysisEnabled(false, { hidePanel: false });
+                    hideElement(analysisButtons);
+                    showElement(analyzeEngineBtn);
+                    if (analysisPanel) showElement(analysisPanel);
+                    hideEngineVisuals();
+                }
+            }
+            const completedHistory = {
+                entries: [],
+                loading: false,
+                error: null,
+            };
+
+            const gameHistoryPanel = document.getElementById('gameHistoryPanel');
+            const gameHistoryMeta = document.getElementById('gameHistoryMeta');
+            const gameHistoryBody = document.getElementById('gameHistoryBody');
+            const gameHistoryEmpty = document.getElementById('gameHistoryEmpty');
+            const gameHistoryTableWrapper = document.getElementById('gameHistoryTableWrapper');
+            const gameHistoryRefreshBtn = document.getElementById('gameHistoryRefresh');
+            const gameHistoryClearBtn = document.getElementById('gameHistoryClear');
+
+            function formatTimestamp(ts) {
+                if (!ts) return '—';
+                try {
+                    const date = new Date(ts);
+                    if (Number.isNaN(date.getTime())) return '—';
+                    return date.toLocaleString();
+                } catch (err) {
+                    return '—';
+                }
+            }
+
+            function formatGameResult(entry) {
+                if (!entry) return '—';
+                if (entry.result) return entry.result;
+                if (entry.winner) return `${entry.winner} wins`;
+                if (entry.reason) return entry.reason;
+                return 'Completed';
+            }
+
+            function renderCompletedGames() {
+                if (!gameHistoryPanel) return;
+                const entries = Array.isArray(completedHistory.entries) ? completedHistory.entries : [];
+
+                if (gameHistoryMeta) {
+                    if (completedHistory.loading) {
+                        gameHistoryMeta.textContent = 'Loading…';
+                    } else if (completedHistory.error) {
+                        gameHistoryMeta.textContent = 'Unable to load history';
+                    } else if (entries.length) {
+                        gameHistoryMeta.textContent = `${entries.length} game${entries.length === 1 ? '' : 's'}`;
+                    } else {
+                        gameHistoryMeta.textContent = 'No completed games';
+                    }
+                }
+
+                if (!gameHistoryBody || !gameHistoryEmpty || !gameHistoryTableWrapper) return;
+                gameHistoryBody.innerHTML = '';
+
+                if (!entries.length) {
+                    showElement(gameHistoryEmpty);
+                    hideElement(gameHistoryTableWrapper);
+                    return;
+                }
+
+                hideElement(gameHistoryEmpty);
+                showElement(gameHistoryTableWrapper);
+
+                entries.forEach((entry) => {
+                    const tr = document.createElement('tr');
+
+                    const finishedCell = document.createElement('td');
+                    finishedCell.textContent = formatTimestamp(entry.finishedAt || entry.completedAt);
+                    tr.appendChild(finishedCell);
+
+                    const resultCell = document.createElement('td');
+                    resultCell.textContent = formatGameResult(entry);
+                    tr.appendChild(resultCell);
+
+                    const winnerCell = document.createElement('td');
+                    winnerCell.textContent = entry.winner || '—';
+                    tr.appendChild(winnerCell);
+
+                    const movesCell = document.createElement('td');
+                    const moveCount = Array.isArray(entry.moves) ? entry.moves.length : 0;
+                    movesCell.textContent = moveCount ? `${moveCount} ply` : '—';
+                    tr.appendChild(movesCell);
+
+                    const playersCell = document.createElement('td');
+                    if (Array.isArray(entry.players) && entry.players.length) {
+                        playersCell.textContent = entry.players.map((p) => p?.name || p?.id || 'Player').join(' vs ');
+                    } else {
+                        playersCell.textContent = '—';
+                    }
+                    tr.appendChild(playersCell);
+
+                    const replayCell = document.createElement('td');
+                    if (entry.moves && entry.moves.length) {
+                        const btn = document.createElement('button');
+                        btn.textContent = 'Replay';
+                        btn.addEventListener('click', () => replayCompletedGame(entry));
+                        replayCell.appendChild(btn);
+                    } else {
+                        replayCell.textContent = '—';
+                    }
+                    tr.appendChild(replayCell);
+
+                    gameHistoryBody.appendChild(tr);
+                });
+            }
+
+            async function fetchCompletedGames() {
+                if (!gameHistoryPanel) return;
+                if (completedHistory.loading) return;
+                completedHistory.loading = true;
+                completedHistory.error = null;
+                try {
+                    if (authState.currentUser) {
+                        const { games } = await fetchUserHistory();
+                        completedHistory.entries = games.map((entry) => ({
+                            id: entry.id,
+                            finishedAt: entry.finishedAt,
+                            result: entry.result,
+                            reason: entry.reason,
+                            winner: entry.winner,
+                            players: entry.players,
+                            moves: entry.moves,
+                        }));
+                    } else {
+                        completedHistory.entries = [];
+                    }
+                    gameState.completedHistoryLoaded = true;
+                } catch (err) {
+                    completedHistory.error = err;
+                    console.warn('Unable to load completed games history', err);
+                } finally {
+                    completedHistory.loading = false;
+                    renderCompletedGames();
+                }
+            }
+
+            async function clearCompletedGamesHistory() {
+                if (!authState.currentUser) {
+                    alert('Sign in to manage history.');
+                    return;
+                }
+                completedHistory.entries = [];
+                renderCompletedGames();
+                appendHistoryEntry({ type: 'game', payload: { clear: true } }).catch((err) => {
+                    console.warn('Unable to clear remote history', err);
+                });
+            }
+
+            function ensureGameHistoryVisible() {
+                if (!gameHistoryPanel) return;
+                showElement(gameHistoryPanel);
+                if (!gameState.completedHistoryLoaded && !completedHistory.loading) {
+                    fetchCompletedGames();
+                }
+            }
+
+            function replayCompletedGame(entry) {
+                if (!entry || !Array.isArray(entry.moves) || !entry.moves.length) {
+                    alert('Replay data unavailable for this game.');
+                    return;
+                }
+                window.location.hash = '#analysis';
+                setTimeout(() => {
+                    const sanMoves = entry.moves.map((move) => move.notation || move.san || move);
+                    const pgnText = Array.isArray(sanMoves) ? sanMoves.join(' ') : '';
+                    const pgnArea = document.getElementById('pgnInput');
+                    if (pgnArea) {
+                        pgnArea.value = pgnText;
+                        pgnLoad(pgnText);
+                        gameState.history = [];
+                        gameState.redoHistory = [];
+                        playSANSequence(gameState.pgnMoves);
+                        gameState.pgnIndex = gameState.pgnMoves.length;
+                        gameState.pgnSynced = true;
+                    }
+                }, 150);
+            }
+
+            if (gameHistoryRefreshBtn) {
+                gameHistoryRefreshBtn.addEventListener('click', fetchCompletedGames);
+            }
+            if (gameHistoryClearBtn) {
+                gameHistoryClearBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmationDialog({
+                        title: 'Clear Completed Games',
+                        message: 'This will erase all recorded completed games. Continue?',
+                        confirmLabel: 'Clear History',
+                        cancelLabel: 'Cancel',
+                    });
+                    if (confirmed) {
+                        clearCompletedGamesHistory();
+                    }
+                });
+            }
+
+            const aiRegistry = {
+                'stockfish-local': {
+                    id: 'stockfish-local',
+                    name: 'Stockfish (Local)',
+                    description: 'Strong classical engine using your local Stockfish binary.',
+                    tags: ['engine', 'strong'],
+                    moveDelayMs: 350,
+                    fallbackId: 'random-baseline',
+                    skillLevel: 10,
+                    enabled: !!backendBase,
+                    async getMove() {
+                        try {
+                            const fen = generateFEN();
+                            const endpoint = `${backendBase.replace(/\/$/, '')}/engines/stockfish/move`;
+                            const payload = {
+                                fen,
+                                skillLevel: this.skillLevel ?? 10,
+                                sideToMove: gameState.currentPlayer,
+                            };
+                            const res = await fetch(endpoint, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                            });
+                            if (!res.ok) {
+                                throw new Error(`Stockfish responded ${res.status}`);
+                            }
+                            const data = await res.json();
+                            const uci = data.bestMove || data.move || data.uci;
+                            if (!uci) return null;
+                            const coords = uciToCoords(uci.trim());
+                            if (!coords) return null;
+                            const { fr, fc, tr, tc, promotion } = coords;
+                            return { fr, fc, tr, tc, promotion: promotion || 'q' };
+                        } catch (err) {
+                            console.warn('Stockfish move failed', err);
+                            return null;
+                        }
+                    }
+                },
+                'random-baseline': {
+                    id: 'random-baseline',
+                    name: 'Random Baseline',
+                    description: 'Chooses a random legal move. Great for testing.',
+                    tags: ['casual', 'baseline'],
+                    moveDelayMs: 150,
+                    async getMove() {
+                        const legal = listAllLegalMoves();
+                        if (!legal || legal.length === 0) return null;
+                        const choice = legal[Math.floor(Math.random() * legal.length)];
+                        if (!choice) return null;
+                        const [fr, fc, tr, tc] = choice;
+                        const piece = gameState.board[fr]?.[fc];
+                        let promotion = null;
+                        if (piece && piece[1] === 'p' && (tr === 0 || tr === 7)) {
+                            promotion = 'q';
+                        }
+                        return { fr, fc, tr, tc, promotion };
+                    }
+                }
+            };
+
+            const aiRegistryOrder = ['stockfish-local', 'random-baseline'];
+
+            const aiModalState = {
+                selectedOpponentId: null,
+                lastFocused: null,
+                returnHash: null,
+            };
+
+            let activeView = 'home';
+            let lastNonComputerView = 'home';
+            let pendingAnalysisLoad = null;
+
+            function setActiveView(view) {
+                activeView = view;
+                if (view !== 'computer') {
+                    lastNonComputerView = view;
+                }
+            }
+
+            const ratingTrendState = {
+                canvas: document.getElementById('puzzleRatingTrend'),
+                empty: document.getElementById('puzzleRatingTrendEmpty'),
+                ctx: null,
+            };
+
+            const analysisState = {
+                enabled: false,
+                pendingTimer: null,
+                inProgress: false,
+                needsRerun: false,
+                lastRequestId: 0,
+                lastEvaluatedFen: null,
+                preferredMoveTime: 1200,
+            };
+
+            const engineEvalBar = document.getElementById('engineEvalBar');
+            const engineEvalLabel = document.getElementById('engineEvalLabel');
+            const engineEvalFill = document.getElementById('engineEvalFill');
+
+            const evaluationGraphState = {
+                panel: document.getElementById('evaluationGraphPanel'),
+                canvas: document.getElementById('evaluationGraphCanvas'),
+                empty: document.getElementById('evaluationGraphEmpty'),
+                latest: document.getElementById('evaluationGraphLatest'),
+                ctx: null,
+                data: [],
+            };
+
+            const moveQualityState = {
+                lastCp: null,
+                lastMoveCount: 0,
+                indicatorEl: null,
+                lastQuality: null,
+            };
+
+            const moveQualityThresholds = {
+                mistake: 100,
+                blunder: 250,
+            };
+
+            function resetEvaluationGraph() {
+                const { panel, canvas, empty, latest } = evaluationGraphState;
+                evaluationGraphState.data = [];
+                if (latest) latest.textContent = 'Last: —';
+                if (empty) empty.classList.remove('hidden');
+                if (canvas) {
+                    canvas.style.display = 'none';
+                    const ctx = evaluationGraphState.ctx;
+                    if (ctx && canvas.width && canvas.height) {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    }
+                }
+                if (panel) panel.classList.add('hidden');
+                moveQualityState.lastCp = null;
+                moveQualityState.lastMoveCount = Array.isArray(gameState.moveHistory) ? gameState.moveHistory.length : 0;
+                clearMoveQualityIndicator();
+            }
+
+            function clearMoveQualityIndicator() {
+                if (moveQualityState.indicatorEl && moveQualityState.indicatorEl.parentElement) {
+                    moveQualityState.indicatorEl.parentElement.removeChild(moveQualityState.indicatorEl);
+                }
+                moveQualityState.indicatorEl = null;
+                moveQualityState.lastQuality = null;
+            }
+
+            function showMoveQualityIndicator(quality) {
+                const lastMove = gameState.lastMove;
+                if (!lastMove) return;
+                const square = document.querySelector(`.square[data-row="${lastMove.toRow}"][data-col="${lastMove.toCol}"]`);
+                if (!square) return;
+                clearMoveQualityIndicator();
+                const indicator = document.createElement('div');
+                indicator.className = `move-quality-indicator ${quality}`;
+                indicator.textContent = quality === 'blunder' ? '??' : '?';
+                square.appendChild(indicator);
+                moveQualityState.indicatorEl = indicator;
+                moveQualityState.lastQuality = quality;
+            }
+
+            function stopAnalysisForGameOver() {
+                if (analysisState.pendingTimer) {
+                    clearTimeout(analysisState.pendingTimer);
+                    analysisState.pendingTimer = null;
+                }
+                analysisState.needsRerun = false;
+                analysisState.lastEvaluatedFen = null;
+                analysisState.lastRequestId += 1;
+            }
+
+            function applyFinalEvaluation(winnerColor) {
+                const normalizedWinner = winnerColor === 'black' ? 'black' : 'white';
+                const mateSign = normalizedWinner === 'white' ? 1 : -1;
+                const finalEvaluation = { type: 'mate', value: mateSign };
+                updateEngineEvalBar({ evaluation: finalEvaluation });
+                updateEvaluationGraph({ evaluation: finalEvaluation });
+                clearMoveQualityIndicator();
+            }
+
+            function ensureEvaluationGraphContext() {
+                if (!evaluationGraphState.canvas) return null;
+                if (evaluationGraphState.ctx) return evaluationGraphState.ctx;
+                const ctx = evaluationGraphState.canvas.getContext('2d');
+                evaluationGraphState.ctx = ctx;
+                return ctx;
+            }
+
+            function convertEvaluationToCentipawns(evaluation) {
+                if (!evaluation) return null;
+                const type = evaluation.type || evaluation.kind;
+                if (type === 'mate') {
+                    const val = Number(evaluation.value);
+                    if (!Number.isFinite(val) || val === 0) return null;
+                    const sign = val > 0 ? 1 : -1;
+                    const distance = Math.min(50, Math.abs(val));
+                    return sign * (2000 - distance * 20);
+                }
+                if (type === 'cp') {
+                    const cp = Number(evaluation.value);
+                    return Number.isFinite(cp) ? cp : null;
+                }
+                return null;
+            }
+
+            function renderEvaluationGraph() {
+                const { canvas, data } = evaluationGraphState;
+                if (!canvas || !data.length) return;
+                const ctx = ensureEvaluationGraphContext();
+                if (!ctx) return;
+
+                const rect = canvas.getBoundingClientRect();
+                const width = Math.max(1, Math.floor(rect.width));
+                const height = Math.max(1, Math.floor(rect.height));
+                if (canvas.width !== width || canvas.height !== height) {
+                    canvas.width = width;
+                    canvas.height = height;
+                }
+
+                ctx.save();
+                ctx.clearRect(0, 0, width, height);
+                ctx.fillStyle = 'rgba(23, 32, 42, 0.85)';
+                ctx.fillRect(0, 0, width, height);
+
+                const values = data.map(point => point.cp);
+                const maxAbs = values.reduce((acc, val) => Math.max(acc, Math.abs(val)), 0);
+                const bound = Math.max(200, maxAbs + 80);
+                const mapValue = (value) => {
+                    const limited = Math.max(-bound, Math.min(bound, value));
+                    return height - ((limited + bound) / (bound * 2)) * height;
+                };
+
+                const zeroY = mapValue(0);
+                ctx.strokeStyle = 'rgba(236, 240, 241, 0.25)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.moveTo(0, zeroY);
+                ctx.lineTo(width, zeroY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                if (data.length === 1) {
+                    const x = width / 2;
+                    const y = mapValue(data[0].cp);
+                    ctx.strokeStyle = '#58d68d';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(x, height);
+                    ctx.lineTo(x, y);
+                    ctx.stroke();
+                } else {
+                    ctx.strokeStyle = '#58d68d';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    data.forEach((point, idx) => {
+                        const x = (idx / (data.length - 1)) * (width - 1);
+                        const y = mapValue(point.cp);
+                        if (idx === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    });
+                    ctx.stroke();
+                }
+
+                const lastPoint = data[data.length - 1];
+                const lastX = data.length === 1 ? width / 2 : ((data.length - 1) / (data.length - 1)) * (width - 1);
+                const lastY = mapValue(lastPoint.cp);
+                ctx.fillStyle = '#f1c40f';
+                ctx.beginPath();
+                ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            function updateEvaluationGraphLatest(evaluation) {
+                if (!evaluationGraphState.latest) return;
+                const text = describeEvaluation(evaluation);
+                evaluationGraphState.latest.textContent = `Last: ${text}`;
+            }
+
+            function updateEvaluationGraph({ evaluation } = {}) {
+                if (!evaluation || !evaluationGraphState.panel) {
+                    return;
+                }
+                if (!analysisState || !analysisState.enabled || activeView !== 'analysis-engine') {
+                    return;
+                }
+                const cp = convertEvaluationToCentipawns(evaluation);
+                updateEvaluationGraphLatest(evaluation);
+                if (!Number.isFinite(cp)) {
+                    return;
+                }
+
+                const moveCount = Array.isArray(gameState.moveHistory) ? gameState.moveHistory.length : 0;
+                const previousMoveCount = moveQualityState.lastMoveCount;
+                const previousCp = moveQualityState.lastCp;
+
+                const ply = moveCount;
+                evaluationGraphState.data.push({ ply, cp });
+                if (evaluationGraphState.data.length > 150) {
+                    evaluationGraphState.data.shift();
+                }
+
+                const { panel, canvas, empty } = evaluationGraphState;
+                panel.classList.remove('hidden');
+                if (canvas) canvas.style.display = 'block';
+                if (empty) empty.classList.add('hidden');
+
+                renderEvaluationGraph();
+
+                if (analysisState.enabled && moveCount > previousMoveCount && Number.isFinite(previousCp)) {
+                    const delta = cp - previousCp;
+                    let quality = null;
+                    if (delta <= -moveQualityThresholds.blunder) {
+                        quality = 'blunder';
+                    } else if (delta <= -moveQualityThresholds.mistake) {
+                        quality = 'mistake';
+                    }
+                    if (quality) {
+                        showMoveQualityIndicator(quality);
+                    } else {
+                        clearMoveQualityIndicator();
+                    }
+                } else if (analysisState.enabled && moveCount > previousMoveCount) {
+                    clearMoveQualityIndicator();
+                }
+
+                moveQualityState.lastMoveCount = moveCount;
+                moveQualityState.lastCp = cp;
+            }
+
+            function normalizeEvaluationForWhite(evaluation, sideToMove = 'white') {
+                if (!evaluation || typeof evaluation !== 'object') return null;
+                const normalized = { ...evaluation };
+                const moverSign = sideToMove === 'black' ? -1 : 1;
+                if (normalized.value != null) {
+                    const numeric = Number(normalized.value);
+                    if (Number.isFinite(numeric)) {
+                        normalized.value = moverSign === 1 ? numeric : -numeric;
+                    }
+                }
+                return normalized;
+            }
+
+            function updateEngineEvalBar({ evaluation } = {}) {
+                if (!engineEvalBar || !engineEvalFill || !engineEvalLabel) return;
+                if (!analysisState.enabled || !evaluation) {
+                    engineEvalBar.classList.remove('visible');
+                    engineEvalBar.setAttribute('aria-hidden', 'true');
+                    engineEvalLabel.textContent = '—';
+                    engineEvalFill.style.height = '50%';
+                    return;
+                }
+
+                const type = evaluation.type || evaluation.kind;
+                let whitePercent;
+                let labelText;
+
+                if (type === 'mate') {
+                    const mateValue = Number(evaluation.value);
+                    const mateText = Number.isFinite(mateValue) ? `Mate in ${Math.abs(mateValue)}` : 'Mate';
+                    labelText = mateText;
+                    if (!Number.isFinite(mateValue)) {
+                        whitePercent = 50;
+                    } else if (mateValue < 0) {
+                        whitePercent = 0;
+                    } else {
+                        whitePercent = 100;
+                    }
+                } else if (type === 'cp') {
+                    const cp = Number(evaluation.value);
+                    if (!Number.isFinite(cp)) {
+                        labelText = '—';
+                        whitePercent = 50;
+                    } else {
+                        const capped = Math.max(-500, Math.min(500, cp));
+                        whitePercent = 50 + (capped / 1000) * 100;
+                        const score = (cp / 100).toFixed(2);
+                        const prefix = cp > 0 ? '+' : '';
+                        labelText = `${prefix}${score}`;
+                    }
+                } else {
+                    whitePercent = 50;
+                    labelText = '—';
+                }
+
+                whitePercent = Math.max(0, Math.min(100, whitePercent));
+                engineEvalFill.style.height = `${whitePercent}%`;
+                engineEvalLabel.textContent = labelText;
+                engineEvalLabel.style.bottom = `${whitePercent}%`;
+                engineEvalBar.classList.add('visible');
+                engineEvalBar.setAttribute('aria-hidden', 'false');
+            }
+
+            function updateAnalysisStatus(message) {
+                const el = document.getElementById('analysisStatus');
+                if (el) el.textContent = message;
+            }
+
+            function updateAnalysisScoreText(text) {
+                const el = document.getElementById('analysisScore');
+                if (el) el.textContent = text;
+            }
+
+            function updateAnalysisDepthText(text) {
+                const el = document.getElementById('analysisDepth');
+                if (el) el.textContent = text;
+            }
+
+            function updateAnalysisLines(lines) {
+                const container = document.getElementById('analysisLines');
+                if (!container) return;
+                container.innerHTML = '';
+                const entries = Array.isArray(lines) ? lines.slice(0, 3) : [];
+                if (!entries.length) {
+                    const placeholder = document.createElement('div');
+                    placeholder.textContent = 'No principal variation available.';
+                    placeholder.style.color = '#bdc3c7';
+                    placeholder.style.fontSize = '0.95rem';
+                    container.appendChild(placeholder);
+                    return;
+                }
+                entries.forEach((line, idx) => {
+                    const wrapper = document.createElement('div');
+                    wrapper.style.display = 'flex';
+                    wrapper.style.flexDirection = 'column';
+                    wrapper.style.gap = '0.2rem';
+                    wrapper.style.background = 'rgba(52, 73, 94, 0.45)';
+                    wrapper.style.borderRadius = '6px';
+                    wrapper.style.padding = '0.45rem 0.6rem';
+
+                    const header = document.createElement('div');
+                    header.style.display = 'flex';
+                    header.style.justifyContent = 'space-between';
+                    header.style.alignItems = 'center';
+                    header.style.fontSize = '0.9rem';
+                    header.style.color = '#f1c40f';
+                    const lineIdx = line && typeof line.index === 'number' ? line.index : (idx + 1);
+                    header.textContent = `Line ${lineIdx}`;
+
+                    const scoreText = document.createElement('div');
+                    scoreText.style.fontSize = '0.95rem';
+                    scoreText.style.color = '#ecf0f1';
+                    const evalText = describeEvaluation(line?.evaluation) || '—';
+                    const depthText = line?.depth != null ? line.depth : '—';
+                    scoreText.textContent = `Score: ${evalText} | Depth: ${depthText}`;
+
+                    const pvText = document.createElement('div');
+                    pvText.style.fontFamily = "'Consolas','Courier New',monospace";
+                    pvText.style.color = '#d6eaf8';
+                    pvText.style.whiteSpace = 'normal';
+                    const pvMoves = Array.isArray(line?.pv) && line.pv.length ? line.pv.join(' ') : '—';
+                    pvText.textContent = `PV: ${pvMoves}`;
+
+                    wrapper.appendChild(header);
+                    wrapper.appendChild(scoreText);
+                    wrapper.appendChild(pvText);
+                    container.appendChild(wrapper);
+                });
+            }
+
+            function resetAnalysisPanel() {
+                updateAnalysisStatus('Idle');
+                updateAnalysisScoreText('Score: —');
+                updateAnalysisDepthText('Depth: —');
+                updateAnalysisLines([]);
+                updateEngineEvalBar();
+                resetEvaluationGraph();
+            }
+
+            function describeEvaluation(evaluation) {
+                if (!evaluation) return '—';
+                const type = evaluation.type || evaluation.kind;
+                if (type === 'mate') {
+                    const val = Number(evaluation.value);
+                    if (!Number.isFinite(val) || val === 0) return 'Mate';
+                    return `Mate in ${Math.abs(val)}`;
+                }
+                if (type === 'cp') {
+                    const cp = Number(evaluation.value);
+                    if (!Number.isFinite(cp)) return '—';
+                    const score = (cp / 100).toFixed(2);
+                    const prefix = cp > 0 ? '+' : '';
+                    return `${prefix}${score} (cp ${cp})`;
+                }
+                return '—';
+            }
+
+            function setAnalysisEnabled(enabled, { hidePanel = false } = {}) {
+                const panel = document.getElementById('analysisPanel');
+                const toggleBtn = document.getElementById('analysisToggle');
+
+                if (analysisState.pendingTimer) {
+                    clearTimeout(analysisState.pendingTimer);
+                    analysisState.pendingTimer = null;
+                }
+
+                if (!enabled) {
+                    analysisState.enabled = false;
+                    analysisState.inProgress = false;
+                    analysisState.needsRerun = false;
+                    analysisState.lastEvaluatedFen = null;
+                    resetAnalysisPanel();
+                    updateEngineEvalBar();
+                    resetEvaluationGraph();
+                    if (toggleBtn) toggleBtn.textContent = 'Start';
+                    if (hidePanel && panel) panel.classList.add('hidden');
+                    if (!hidePanel && panel) panel.classList.remove('hidden');
+                    toggleEngineAnalysisSections(false);
+                    hideEngineVisuals();
+                    return;
+                }
+
+                analysisState.enabled = true;
+                analysisState.lastEvaluatedFen = null;
+                resetEvaluationGraph();
+                if (panel) panel.classList.remove('hidden');
+                if (toggleBtn) toggleBtn.textContent = 'Disable';
+                toggleEngineAnalysisSections(true);
+                updateAnalysisStatus('Queued…');
+                scheduleAnalysis(150);
+            }
+
+            function scheduleAnalysis(delay = 350) {
+                if (!analysisState.enabled) return;
+                if (gameState.gameOver) return;
+                if (analysisState.inProgress) {
+                    analysisState.needsRerun = true;
+                    return;
+                }
+                if (analysisState.pendingTimer) {
+                    clearTimeout(analysisState.pendingTimer);
+                }
+                analysisState.pendingTimer = setTimeout(() => {
+                    analysisState.pendingTimer = null;
+                    runAnalysis();
+                }, Math.max(0, delay));
+            }
+
+            async function runAnalysis() {
+                if (!analysisState.enabled) return;
+                if (gameState.gameOver) return;
+                if (analysisState.inProgress) {
+                    analysisState.needsRerun = true;
+                    return;
+                }
+                if (!gameState.board || !gameState.board.length || gameState.pendingMove) {
+                    resetAnalysisPanel();
+                    return;
+                }
+                const fen = generateFEN();
+                if (!fen) {
+                    updateAnalysisStatus('Unable to generate FEN');
+                    return;
+                }
+                analysisState.inProgress = true;
+                analysisState.needsRerun = false;
+                const requestId = ++analysisState.lastRequestId;
+                updateAnalysisStatus('Evaluating…');
+                try {
+                    const endpoint = `${backendBase.replace(/\/$/, '')}/engines/stockfish/move`;
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            fen,
+                            movetime: analysisState.preferredMoveTime,
+                            skillLevel: 20,
+                            multiPv: 3,
+                        })
+                    });
+                    if (!res.ok) {
+                        throw new Error(`Engine responded ${res.status}`);
+                    }
+                    const data = await res.json();
+                    if (!analysisState.enabled || requestId !== analysisState.lastRequestId) {
+                        return;
+                    }
+                    analysisState.lastEvaluatedFen = fen;
+                    const primaryLine = Array.isArray(data.lines) && data.lines.length ? data.lines[0] : null;
+                    const bestMove = primaryLine?.bestMove || data.bestMove || data.move || data.uci || null;
+                    const normalizedPrimaryEval = normalizeEvaluationForWhite(primaryLine?.evaluation || data.evaluation, gameState.currentPlayer);
+                    const evaluationText = describeEvaluation(normalizedPrimaryEval);
+                    const scoreLine = bestMove ? `Score: ${evaluationText} (Best: ${bestMove})` : `Score: ${evaluationText}`;
+                    updateAnalysisScoreText(scoreLine);
+                    const depthValue = primaryLine?.depth != null ? primaryLine.depth : (data.depth != null ? data.depth : '—');
+                    updateAnalysisDepthText(`Depth: ${depthValue}`);
+                    const normalizedLines = Array.isArray(data.lines)
+                        ? data.lines.map(line => ({
+                            ...line,
+                            evaluation: normalizeEvaluationForWhite(line?.evaluation, gameState.currentPlayer),
+                        }))
+                        : [];
+                    updateAnalysisLines(normalizedLines);
+                    updateEngineEvalBar({ evaluation: normalizedPrimaryEval });
+                    updateEvaluationGraph({ evaluation: normalizedPrimaryEval });
+                    updateAnalysisStatus('Ready');
+                } catch (err) {
+                    if (analysisState.enabled) {
+                        updateAnalysisStatus(`Error: ${err.message}`);
+                        updateAnalysisScoreText('Score: —');
+                        updateAnalysisDepthText('Depth: —');
+                        updateAnalysisLines([]);
+                        updateEngineEvalBar();
+                    }
+                } finally {
+                    analysisState.inProgress = false;
+                    if (analysisState.enabled && analysisState.needsRerun) {
+                        analysisState.needsRerun = false;
+                        scheduleAnalysis(200);
                     }
                 }
             }
 
-            function showPuzzles(options = {}) {
+            function onAnalysisPositionChanged() {
+                if (!analysisState.enabled) return;
+                if (gameState.gameOver) return;
+                if (!gameState.board || !gameState.board.length || gameState.pendingMove) return;
+                scheduleAnalysis(300);
+            }
+
+            let puzzleAudioContext = null;
+
+            function normalizeAttemptRecord(raw, fallbackNow) {
+                if (!raw || (raw.id == null && raw.puzzleId == null)) return null;
+                const now = Number.isFinite(fallbackNow) ? fallbackNow : Date.now();
+                const baseTimestamp = Number.isFinite(raw.timestamp)
+                    ? raw.timestamp
+                    : (Number.isFinite(raw.completedAt) ? raw.completedAt : now);
+                const mistakes = Array.isArray(raw.mistakes) ? raw.mistakes.map(item => ({ ...item })).slice(0, 20) : [];
+                const puzzleId = raw.puzzleId != null ? raw.puzzleId : raw.id;
+                const ratingDelta = Number.isFinite(raw.delta)
+                    ? raw.delta
+                    : (Number.isFinite(raw.ratingDelta) ? raw.ratingDelta : 0);
+                const ratingAfter = Number.isFinite(raw.ratingAfter)
+                    ? raw.ratingAfter
+                    : (Number.isFinite(raw.rating_after) ? raw.rating_after : undefined);
+                const streakValue = Number.isFinite(raw.streak)
+                    ? raw.streak
+                    : (Number.isFinite(raw.streakAfter) ? raw.streakAfter : 0);
+                const successValue = raw.success != null ? !!raw.success : !!raw.solved;
+                return {
+                    id: String(puzzleId),
+                    puzzleId: String(puzzleId),
+                    success: successValue,
+                    timestamp: baseTimestamp,
+                    completedAt: Number.isFinite(raw.completedAt) ? raw.completedAt : baseTimestamp,
+                    streak: streakValue,
+                    delta: ratingDelta,
+                    tookHint: !!raw.tookHint,
+                    mistakes,
+                    reason: raw.reason || (successValue ? 'solved' : 'failed'),
+                    ratingAfter: ratingAfter,
+                };
+            }
+
+            function normalizeReviewEntry(raw) {
+                if (!raw || !raw.id) return null;
+                return {
+                    id: String(raw.id),
+                    mistakes: Array.isArray(raw.mistakes) ? raw.mistakes.map(item => ({ ...item })).slice(0, 20) : [],
+                    completedAt: Number.isFinite(raw.completedAt) ? raw.completedAt : Date.now(),
+                    tookHint: !!raw.tookHint,
+                };
+            }
+
+            const historyOverlay = document.getElementById('historyOverlay');
+            const historyMetaEl = document.getElementById('historyMeta');
+            const historyEmptyEl = document.getElementById('historyEmpty');
+            const historyWrapperEl = document.getElementById('historyTableWrapper');
+            const historyTableBody = document.getElementById('historyTableBody');
+            const historyCloseBtn = document.getElementById('historyCloseBtn');
+            const historyCloseFooterBtn = document.getElementById('historyCloseFooterBtn');
+            const historyRefreshBtn = document.getElementById('historyRefreshBtn');
+
+            restoreAuthState();
+            updateAuthUI();
+            await attemptSessionRestore();
+            updatePuzzleStreakDisplay();
+            updatePlayerRatingDisplay();
+            updateReviewButtonState();
+            updateRatingTrendChart();
+
+            function clearPuzzleHistory({ keepStreak = false } = {}) {
+                if (!authState.currentUser) {
+                    alert('Sign in to manage puzzle history.');
+                    return;
+                }
+                gameState.attemptHistory = [];
+                gameState.solvedIds = new Set();
+                gameState.reviewQueue = [];
+                puzzleState.mistakeMoves = [];
+                puzzleState.usedHint = false;
+                puzzleState.madeMistake = false;
+                puzzleState.ratingSettled = false;
+                puzzleState.lastDelta = 0;
+                puzzleState.streak = keepStreak ? puzzleState.streak : 0;
+                puzzleState.playerRating = keepStreak ? puzzleState.playerRating : 1500;
+                puzzleState.ratingHistory = [];
+                refreshPuzzleHistoryView();
+                updatePuzzleStreakDisplay();
+                updatePlayerRatingDisplay();
+                updateReviewButtonState();
+                updateRatingTrendChart();
+                appendHistoryEntry({ type: 'puzzle', payload: { clear: true, rating: puzzleState.playerRating, streak: puzzleState.streak } }).catch((err) => {
+                    console.warn('Unable to clear puzzle history remotely', err);
+                });
+            }
+
+            const confirmOverlay = document.getElementById('confirmOverlay');
+            const confirmTitleEl = document.getElementById('confirmTitle');
+            const confirmMessageEl = document.getElementById('confirmMessage');
+            const confirmCancelBtn = document.getElementById('confirmCancelBtn');
+            const confirmConfirmBtn = document.getElementById('confirmConfirmBtn');
+            let confirmResolve = null;
+
+            function formatHistoryDate(timestamp) {
+                if (!Number.isFinite(timestamp)) return '—';
+                try {
+                    const date = new Date(timestamp);
+                    if (Number.isNaN(date.getTime())) return '—';
+                    return date.toLocaleString(undefined, {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                    });
+                } catch (err) {
+                    return '—';
+                }
+            }
+
+            function refreshPuzzleHistoryView() {
+                if (!historyMetaEl || !historyEmptyEl || !historyWrapperEl || !historyTableBody) return;
+                const attempts = Array.isArray(gameState.attemptHistory) ? gameState.attemptHistory.slice() : [];
+                attempts.sort((a, b) => {
+                    const aTime = Number.isFinite(a?.completedAt) ? a.completedAt : (Number.isFinite(a?.timestamp) ? a.timestamp : 0);
+                    const bTime = Number.isFinite(b?.completedAt) ? b.completedAt : (Number.isFinite(b?.timestamp) ? b.timestamp : 0);
+                    return bTime - aTime;
+                });
+                const total = attempts.length;
+                historyMetaEl.textContent = total ? `${total} attempt${total === 1 ? '' : 's'} recorded` : 'No attempts recorded yet';
+                historyTableBody.innerHTML = '';
+                if (!total) {
+                    historyEmptyEl.classList.remove('hidden');
+                    historyEmptyEl.hidden = false;
+                    historyWrapperEl.classList.add('hidden');
+                    historyWrapperEl.hidden = true;
+                    return;
+                }
+                historyEmptyEl.classList.add('hidden');
+                historyEmptyEl.hidden = true;
+                historyWrapperEl.classList.remove('hidden');
+                historyWrapperEl.hidden = false;
+                attempts.forEach((attempt) => {
+                    const tr = document.createElement('tr');
+                    const dateCell = document.createElement('td');
+                    dateCell.textContent = formatHistoryDate(Number.isFinite(attempt.completedAt) ? attempt.completedAt : attempt.timestamp);
+                    tr.appendChild(dateCell);
+
+                    const idCell = document.createElement('td');
+                    idCell.textContent = attempt.id || '—';
+                    tr.appendChild(idCell);
+
+                    const resultCell = document.createElement('td');
+                    const success = !!attempt.success;
+                    resultCell.textContent = success ? 'Solved' : (attempt.reason ? attempt.reason.replace(/[-_]/g, ' ') : 'Failed');
+                    resultCell.className = success ? 'history-result-success' : 'history-result-fail';
+                    tr.appendChild(resultCell);
+
+                    const deltaCell = document.createElement('td');
+                    deltaCell.textContent = Number.isFinite(attempt.delta) ? formatRatingDelta(attempt.delta) : '—';
+                    tr.appendChild(deltaCell);
+
+                    const streakCell = document.createElement('td');
+                    streakCell.textContent = Number.isFinite(attempt.streak) ? `${attempt.streak}` : '—';
+                    tr.appendChild(streakCell);
+
+                    const mistakesCell = document.createElement('td');
+                    const mistakeCount = Array.isArray(attempt.mistakes) ? attempt.mistakes.length : 0;
+                    mistakesCell.textContent = mistakeCount ? `${mistakeCount}` : '—';
+                    tr.appendChild(mistakesCell);
+
+                    const hintCell = document.createElement('td');
+                    hintCell.textContent = attempt.tookHint ? 'Yes' : 'No';
+                    tr.appendChild(hintCell);
+
+                    const reviewCell = document.createElement('td');
+                    if (attempt.id) {
+                        const viewBtn = document.createElement('button');
+                        viewBtn.type = 'button';
+                        viewBtn.textContent = 'Load';
+                        viewBtn.dataset.puzzleId = attempt.id;
+                        viewBtn.dataset.historyAction = 'load';
+                        viewBtn.style.minWidth = '90px';
+                        reviewCell.appendChild(viewBtn);
+                    } else {
+                        reviewCell.textContent = '—';
+                    }
+                    tr.appendChild(reviewCell);
+
+                    historyTableBody.appendChild(tr);
+                });
+            }
+
+            function openPuzzleHistory() {
+                if (!historyOverlay) return;
+                refreshPuzzleHistoryView();
+                historyOverlay.classList.remove('hidden');
+                historyOverlay.classList.add('visible');
+                historyOverlay.setAttribute('aria-hidden', 'false');
+                if (historyCloseBtn) historyCloseBtn.focus({ preventScroll: true });
+            }
+
+            function closePuzzleHistory() {
+                if (!historyOverlay) return;
+                historyOverlay.classList.add('hidden');
+                historyOverlay.classList.remove('visible');
+                historyOverlay.setAttribute('aria-hidden', 'true');
+            }
+
+            function hideConfirmationDialog() {
+                if (confirmOverlay) {
+                    confirmOverlay.classList.add('hidden');
+                    confirmOverlay.classList.remove('visible');
+                    confirmOverlay.setAttribute('aria-hidden', 'true');
+                }
+                confirmResolve = null;
+            }
+
+            function showConfirmationDialog({ title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel' }) {
+                return new Promise(resolve => {
+                    if (!confirmOverlay) {
+                        resolve(false);
+                        return;
+                    }
+                    confirmResolve = resolve;
+                    confirmTitleEl.textContent = title || 'Confirm Action';
+                    confirmMessageEl.textContent = message || 'Are you sure?';
+                    confirmCancelBtn.textContent = cancelLabel;
+                    confirmConfirmBtn.textContent = confirmLabel;
+                    confirmOverlay.classList.remove('hidden');
+                    confirmOverlay.classList.add('visible');
+                    confirmOverlay.setAttribute('aria-hidden', 'false');
+                    confirmConfirmBtn.focus({ preventScroll: true });
+                });
+            }
+
+            if (confirmCancelBtn) {
+                confirmCancelBtn.addEventListener('click', () => {
+                    if (confirmResolve) confirmResolve(false);
+                    hideConfirmationDialog();
+                });
+            }
+
+            if (confirmConfirmBtn) {
+                confirmConfirmBtn.addEventListener('click', () => {
+                    if (confirmResolve) confirmResolve(true);
+                    hideConfirmationDialog();
+                });
+            }
+
+            if (confirmOverlay) {
+                confirmOverlay.addEventListener('click', (event) => {
+                    if (event.target === confirmOverlay) {
+                        if (confirmResolve) confirmResolve(false);
+                        hideConfirmationDialog();
+                    }
+                });
+            }
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                if (confirmOverlay && confirmOverlay.classList.contains('visible')) {
+                    if (confirmResolve) confirmResolve(false);
+                    hideConfirmationDialog();
+                    return;
+                }
+                if (historyOverlay && historyOverlay.classList.contains('visible')) {
+                    closePuzzleHistory();
+                }
+            });
+
+            function setPuzzleStatus(message, isError = false) {
+                const status = document.getElementById('puzzleStatus');
+                if (status) {
+                    status.textContent = message;
+                    status.style.color = isError ? '#e74c3c' : '#ecf0f1';
+                }
+                const floating = document.getElementById('puzzleStatusFloating');
+                if (floating) {
+                    floating.textContent = message;
+                    floating.classList.toggle('is-error', !!isError);
+                }
+            }
+
+            function updatePuzzleStreakDisplay() {
+                const streakEl = document.getElementById('puzzleStreak');
+                if (streakEl) streakEl.textContent = `${puzzleState.streak}`;
+            }
+
+            function updateReviewButtonState() {
+                const reviewBtn = document.getElementById('puzzleReview');
+                if (!reviewBtn) return;
+                const hasQueue = Array.isArray(gameState.reviewQueue) && gameState.reviewQueue.length > 0;
+                reviewBtn.disabled = !hasQueue;
+                reviewBtn.textContent = hasQueue ? `Review Mistakes (${gameState.reviewQueue.length})` : 'Review Mistakes';
+            }
+
+            function queuePuzzleForReview(entry) {
+                if (!entry || !entry.id) return;
+                const existingIndex = gameState.reviewQueue.findIndex(item => item.id === entry.id);
+                if (existingIndex >= 0) {
+                    gameState.reviewQueue.splice(existingIndex, 1, entry);
+                } else {
+                    gameState.reviewQueue.push(entry);
+                }
+                updateReviewButtonState();
+            }
+
+            function finalizeCurrentPuzzleAttempt({ success = false, reason, skipQueue = false } = {}) {
+                if (!puzzleState.currentPuzzleId || puzzleState.attemptRecorded) return;
+                const inReview = !!puzzleState.reviewMode;
+                const idKey = String(puzzleState.currentPuzzleId || '');
+                const wasSolvedBefore = gameState.solvedIds.has(idKey);
+                let outcomeDelta = puzzleState.lastDelta;
+                if (!puzzleState.ratingSettled) {
+                    if (inReview || wasSolvedBefore) {
+                        puzzleState.ratingSettled = true;
+                        puzzleState.lastDelta = 0;
+                        outcomeDelta = 0;
+                    } else {
+                        const score = success ? 1 : 0;
+                        outcomeDelta = settlePuzzleRating(score);
+                    }
+                }
+                recordPuzzleAttempt({
+                    success,
+                    delta: outcomeDelta,
+                    tookHint: puzzleState.usedHint,
+                    mistakeMoves: puzzleState.mistakeMoves,
+                    reason: reason || (inReview ? (success ? 'review-completed' : 'review-abandoned') : (success ? 'completed' : 'abandoned')),
+                    skipQueue,
+                });
+            }
+
+            function dequeueNextReviewPuzzle() {
+                if (!Array.isArray(gameState.reviewQueue) || !gameState.reviewQueue.length) return null;
+                const next = gameState.reviewQueue.shift();
+                updateReviewButtonState();
+                return next || null;
+            }
+
+            function formatRatingDelta(delta) {
+                if (typeof delta !== 'number') return '—';
+                if (delta > 0) return `+${delta}`;
+                if (delta < 0) return `${delta}`;
+                return '0';
+            }
+
+            function updatePlayerRatingDisplay() {
+                const ratingEl = document.getElementById('playerPuzzleRating');
+                if (ratingEl) {
+                    ratingEl.textContent = `${Math.round(puzzleState.playerRating)}`;
+                }
+                const deltaEl = document.getElementById('playerPuzzleDelta');
+                if (deltaEl) {
+                    if (puzzleState.ratingSettled) {
+                        const text = formatRatingDelta(puzzleState.lastDelta);
+                        deltaEl.textContent = text;
+                        if (puzzleState.lastDelta > 0) deltaEl.style.color = '#58d68d';
+                        else if (puzzleState.lastDelta < 0) deltaEl.style.color = '#e74c3c';
+                        else deltaEl.style.color = '#ecf0f1';
+                    } else {
+                        deltaEl.textContent = '—';
+                        deltaEl.style.color = '#ecf0f1';
+                    }
+                }
+            }
+
+            function settlePuzzleRating(score) {
+                if (puzzleState.ratingSettled) return puzzleState.lastDelta;
+                const puzzleRating = (puzzleState.lastPuzzle && typeof puzzleState.lastPuzzle.rating === 'number')
+                    ? puzzleState.lastPuzzle.rating
+                    : 1500;
+                const expected = 1 / (1 + Math.pow(10, (puzzleRating - puzzleState.playerRating) / 400));
+                const kFactor = 24;
+                const rawDelta = Math.round(kFactor * (score - expected));
+                puzzleState.playerRating = Math.max(100, Math.round(puzzleState.playerRating + rawDelta));
+                puzzleState.lastDelta = rawDelta;
+                puzzleState.ratingSettled = true;
+                updatePlayerRatingDisplay();
+                return rawDelta;
+            }
+
+            function nextRatingWindowSize(previous) {
+                const tiers = [100, 200, 300, 450, 600, 800];
+                if (!Number.isFinite(previous) || previous < 0) return tiers[0];
+                for (let i = 0; i < tiers.length; i += 1) {
+                    if (previous < tiers[i]) return tiers[i];
+                }
+                return previous + 250;
+            }
+
+            function hidePuzzleSuccess() {
+                const modal = document.getElementById('puzzleSuccessModal');
+                if (modal) modal.classList.add('hidden');
+            }
+
+            function playPuzzleSuccessSound() {
+                try {
+                    if (!puzzleAudioContext) {
+                        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                        if (!AudioContextClass) return;
+                        puzzleAudioContext = new AudioContextClass();
+                    }
+                    if (puzzleAudioContext.state === 'suspended') {
+                        puzzleAudioContext.resume().catch(() => {});
+                    }
+                    const ctx = puzzleAudioContext;
+                    const now = ctx.currentTime;
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(880, now);
+                    gain.gain.setValueAtTime(0.0001, now);
+                    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(now);
+                    osc.stop(now + 0.55);
+                } catch (err) {
+                    console.warn('Unable to play puzzle success sound', err);
+                }
+            }
+
+            function showPuzzleSuccess() {
+                const wasActive = puzzleState.active;
+                puzzleState.active = false;
+                const idKey = String(puzzleState.currentPuzzleId || '');
+                const wasSolvedBefore = gameState.solvedIds.has(idKey);
+                if (wasActive && !puzzleState.missedBeforeSuccess) {
+                    puzzleState.streak = Math.max(0, puzzleState.streak + 1);
+                    updatePuzzleStreakDisplay();
+                }
+                let delta = puzzleState.lastDelta;
+                if (!puzzleState.ratingSettled) {
+                    if (wasSolvedBefore) {
+                        puzzleState.ratingSettled = true;
+                        puzzleState.lastDelta = 0;
+                        delta = 0;
+                    } else {
+                        const finalScore = puzzleState.madeMistake ? 0 : 1;
+                        delta = settlePuzzleRating(finalScore);
+                    }
+                }
+                const deltaText = formatRatingDelta(delta);
+                const statusSuffix = puzzleState.ratingSettled ? ` (Δ ${deltaText} ELO)` : '';
+                setPuzzleStatus(`Puzzle solved! 🎉${statusSuffix}`);
+                recordPuzzleAttempt({ success: true, delta, tookHint: puzzleState.usedHint, mistakeMoves: puzzleState.mistakeMoves });
+                const modal = document.getElementById('puzzleSuccessModal');
+                if (modal) {
+                    modal.classList.remove('hidden');
+                    const focusTarget = document.getElementById('puzzlePlayAgain');
+                    if (focusTarget) {
+                        setTimeout(() => focusTarget.focus({ preventScroll: true }), 50);
+                    }
+                    const body = document.getElementById('puzzleSuccessBody');
+                    if (body) {
+                        const ratingLine = `Your puzzle rating: <strong>${Math.round(puzzleState.playerRating)}</strong>`;
+                        const deltaLine = `Rating change: <strong>${deltaText} ELO</strong>`;
+                        body.innerHTML = `You solved the puzzle! Current streak: <strong>${puzzleState.streak}</strong><br>${ratingLine}<br>${deltaLine}`;
+                    }
+                }
+                playPuzzleSuccessSound();
+            }
+
+            function recordPuzzleAttempt({ success, delta = 0, tookHint = false, mistakeMoves = [], reason, skipQueue = false } = {}) {
+                if (!puzzleState.currentPuzzleId) return;
+                if (puzzleState.attemptRecorded) return;
+                const now = Date.now();
+                const attempt = {
+                    id: puzzleState.currentPuzzleId,
+                    success: !!success,
+                    timestamp: puzzleState.startTimestamp || now,
+                    completedAt: now,
+                    streak: puzzleState.streak,
+                    delta,
+                    tookHint: !!tookHint,
+                    mistakes: Array.isArray(mistakeMoves) ? mistakeMoves.slice(0, 20) : [],
+                    reason: reason || (success ? 'solved' : 'failed'),
+                    ratingAfter: Number.isFinite(puzzleState.playerRating) ? Math.round(puzzleState.playerRating) : undefined,
+                };
+                gameState.attemptHistory.push(attempt);
+                if (gameState.attemptHistory.length > 300) {
+                    gameState.attemptHistory.splice(0, gameState.attemptHistory.length - 300);
+                }
+                if (attempt.success) {
+                    gameState.solvedIds.add(attempt.id);
+                    gameState.reviewQueue = gameState.reviewQueue.filter(item => item.id !== attempt.id);
+                    if (attempt.mistakes.length) {
+                        queuePuzzleForReview({
+                            id: attempt.id,
+                            mistakes: attempt.mistakes,
+                            completedAt: attempt.completedAt,
+                            tookHint: attempt.tookHint,
+                        });
+                    }
+                    puzzleState.reviewMode = false;
+                    puzzleState.reviewActiveEntry = null;
+                } else if (!skipQueue) {
+                    queuePuzzleForReview({
+                        id: attempt.id,
+                        mistakes: attempt.mistakes,
+                        completedAt: attempt.completedAt,
+                        tookHint: attempt.tookHint,
+                    });
+                    puzzleState.reviewMode = false;
+                    puzzleState.reviewActiveEntry = null;
+                }
+                puzzleState.attemptRecorded = true;
+                puzzleState.active = false;
+                puzzleState.mistakeMoves = [];
+                puzzleState.usedHint = false;
+                puzzleState.missedBeforeSuccess = false;
+                if (Number.isFinite(attempt.ratingAfter)) {
+                    puzzleState.ratingHistory.push({ rating: attempt.ratingAfter, timestamp: attempt.completedAt });
+                    if (puzzleState.ratingHistory.length > 500) {
+                        puzzleState.ratingHistory = puzzleState.ratingHistory.slice(-500);
+                    }
+                    updateRatingTrendChart();
+                }
+                syncPuzzleAttemptWithBackend(attempt).catch((err) => {
+                    console.warn('Unable to persist puzzle attempt', err);
+                });
+                updateReviewButtonState();
+            }
+
+            function updatePuzzleDetails(puzzle, { reviewEntry = null } = {}) {
+                const details = document.getElementById('puzzleDetails');
+                if (!details) return;
+                puzzleState.lastPuzzle = puzzle;
+                puzzleState.solution = (puzzle.moves || []).slice();
+                puzzleState.active = !!(puzzle.moves && puzzle.moves.length);
+                puzzleState.autoPlaying = false;
+                puzzleState.ratingSettled = false;
+                puzzleState.madeMistake = false;
+                puzzleState.lastDelta = 0;
+                puzzleState.currentPuzzleId = puzzle.id || null;
+                puzzleState.startTimestamp = Date.now();
+                puzzleState.mistakeMoves = [];
+                puzzleState.attemptRecorded = false;
+                gameState.mistakeRecordedForCurrent = false;
+                puzzleState.usedHint = false;
+                puzzleState.missedBeforeSuccess = false;
+                if (puzzleState.reviewMode) {
+                    puzzleState.streak = Math.max(0, puzzleState.streak);
+                }
+                hidePuzzleSuccess();
+                removeHintHighlights();
+                updatePlayerRatingDisplay();
+
+                const idEl = document.getElementById('puzzleId');
+                const ratingEl = document.getElementById('puzzleRating');
+                const popularityEl = document.getElementById('puzzlePopularity');
+                const fenEl = document.getElementById('puzzleFen');
+                if (idEl) idEl.textContent = puzzle.id || '—';
+                if (ratingEl) ratingEl.textContent = puzzle.rating != null ? `${puzzle.rating}` : '—';
+                if (popularityEl) popularityEl.textContent = puzzle.popularity != null ? `${puzzle.popularity}` : '—';
+                if (fenEl) fenEl.textContent = puzzle.fen || '—';
+
+                const themesEl = document.getElementById('puzzleThemes');
+                if (themesEl) {
+                    themesEl.innerHTML = '';
+                    (puzzle.themes || []).forEach(theme => {
+                        const span = document.createElement('span');
+                        span.className = 'puzzle-tag';
+                        span.textContent = theme;
+                        themesEl.appendChild(span);
+                    });
+                    if (!themesEl.children.length) {
+                        const span = document.createElement('span');
+                        span.textContent = 'No tags';
+                        themesEl.appendChild(span);
+                    }
+                }
+
+                const link = document.getElementById('puzzleGameLink');
+                if (link) {
+                    if (puzzle.gameUrl) {
+                        link.href = puzzle.gameUrl;
+                        link.style.pointerEvents = '';
+                        link.style.opacity = '1';
+                    } else {
+                        link.href = '#';
+                        link.style.pointerEvents = 'none';
+                        link.style.opacity = '0.6';
+                    }
+                }
+
+                details.classList.remove('hidden');
+                setPuzzleStatus('Puzzle ready');
+                showPuzzleBoard();
+                if (puzzle.fen) {
+                    applyPuzzlePosition(puzzle.fen);
+                }
+                if (puzzle.moves && puzzle.moves.length) {
+                    gameState.puzzleSolution = puzzle.moves.slice();
+                    let heroColor = determinePuzzleHeroColor();
+                    if (!heroColor) {
+                        if (gameState.currentPlayer === 'white') {
+                            heroColor = 'black';
+                        } else if (gameState.currentPlayer === 'black') {
+                            heroColor = 'white';
+                        } else {
+                            heroColor = puzzleState.heroColor || 'white';
+                        }
+                    }
+                    puzzleState.heroColor = heroColor;
+                    gameState.currentPlayer = heroColor;
+                    const shouldFlip = heroColor === 'black';
+                    if (gameState.boardFlipped !== shouldFlip) {
+                        gameState.boardFlipped = shouldFlip;
+                        const chessboard = document.getElementById('chessboard');
+                        if (chessboard) chessboard.classList.toggle('flipped', shouldFlip);
+                        updateBoardUI();
+                    }
+                    updatePlayerIndicators();
+                    updateGameStatus();
+                    // Lead move: first solution move is usually opponent's reply; play it automatically
+                    playPuzzleLeadMove();
+                    gameState.currentPlayer = puzzleState.heroColor;
+                    updatePlayerIndicators();
+                    updateGameStatus();
+                    if (gameState.puzzleSolution.length) {
+                        const whoMoves = puzzleState.heroColor === 'black' ? 'Black to move' : 'White to move';
+                        if (puzzleState.reviewMode) {
+                            setPuzzleStatus(`Review mode: ${whoMoves.toLowerCase()} – play the correct moves to finish the puzzle`);
+                        } else {
+                            setPuzzleStatus(`${whoMoves} – find the best move`);
+                        }
+                    }
+                } else {
+                    gameState.puzzleSolution = [];
+                }
+
+            }
+
+            function resetBoardForPuzzle() {
+                clearSelection();
+                gameState.history = [];
+                gameState.redoHistory = [];
+                gameState.moveHistory = [];
+                gameState.capturedByWhite = [];
+                gameState.capturedByBlack = [];
+                gameState.gameOver = false;
+                gameState.halfmoveClock = 0;
+                gameState.repetitionMap = {};
+                gameState.pendingMove = null;
+                gameState.pgnVariations = {};
+                gameState.pgnMoves = [];
+                gameState.pgnIndex = 0;
+                gameState.selectedPiece = null;
+                gameState.replayMode = false;
+                gameState.replayPromotionChoice = null;
+                gameState.pgnSynced = true;
+                gameState.puzzleSolution = [];
+                puzzleState.active = false;
+                puzzleState.solution = [];
+                puzzleState.autoPlaying = false;
+                puzzleState.heroColor = null;
+                hidePuzzleSuccess();
+                updatePuzzleStreakDisplay();
+                const statusDetail = document.getElementById('statusDetail');
+                if (statusDetail) statusDetail.textContent = 'Puzzle in progress';
+                const gameStatus = document.getElementById('gameStatus');
+                if (gameStatus) gameStatus.textContent = 'Puzzle Position';
+                resetEvaluationGraph();
+            }
+
+            function applyPuzzlePosition(fen) {
+                const board = fen ? parseFENBoard(fen) : null;
+                if (!board) return;
+                gameState.board = board.board;
+                gameState.currentPlayer = board.turn === 'w' ? 'white' : 'black';
+                puzzleState.heroColor = gameState.currentPlayer;
+                gameState.enPassantTarget = board.enPassant;
+                gameState.castlingRights = board.castling;
+                gameState.halfmoveClock = board.halfmoveClock;
+                gameState.repetitionMap = {};
+                gameState.boardFlipped = board.turn === 'b';
+                updateBoardUI();
+                updatePlayerIndicators();
+                updateGameStatus();
+                const chessboard = document.getElementById('chessboard');
+                if (chessboard) chessboard.classList.toggle('flipped', !!gameState.boardFlipped);
+                recordRepetition();
+            }
+
+            function parseFENBoard(fen) {
+                if (!fen) return null;
+                const parts = fen.trim().split(/\s+/);
+                if (parts.length < 4) return null;
+                const rows = parts[0].split('/');
+                if (rows.length !== 8) return null;
+                const board = Array.from({ length: 8 }, () => Array(8).fill(''));
+                for (let r = 0; r < 8; r++) {
+                    let file = 0;
+                    for (const ch of rows[r]) {
+                        if (/[1-8]/.test(ch)) {
+                            file += parseInt(ch, 10);
+                        } else {
+                            const color = ch === ch.toUpperCase() ? 'w' : 'b';
+                            const symbol = ch.toLowerCase();
+                            board[r][file] = color + symbol;
+                            file += 1;
+                        }
+                    }
+                }
+                const turn = parts[1] === 'b' ? 'b' : 'w';
+                const castling = {
+                    wK: parts[2].includes('K'),
+                    wQ: parts[2].includes('Q'),
+                    bK: parts[2].includes('k'),
+                    bQ: parts[2].includes('q')
+                };
+                const ep = parts[3] !== '-' ? algebraicToIndices(parts[3]) : null;
+                const halfmoveClock = parts[4] ? parseInt(parts[4], 10) : 0;
+                return { board, turn, castling, enPassant: ep, halfmoveClock };
+            }
+
+            function algebraicToIndices(square) {
+                if (!square || square.length < 2) return null;
+                const files = 'abcdefgh';
+                const file = files.indexOf(square[0]);
+                const rank = 8 - parseInt(square[1], 10);
+                if (file < 0 || rank < 0 || rank > 7) return null;
+                return [rank, file];
+            }
+
+            function playPuzzleLeadMove({ force = false } = {}) {
+                if (!gameState.puzzleSolution || !gameState.puzzleSolution.length) return;
+                const peek = gameState.puzzleSolution[0];
+                if (!peek) return;
+                if (!force) {
+                    const coords = uciToCoords(peek);
+                    if (coords) {
+                        if (!gameState.board) {
+                            applyPuzzlePosition(puzzleState.lastPuzzle?.fen || generateFEN());
+                        }
+                        const piece = gameState.board?.[coords.fr]?.[coords.fc];
+                        if (piece) {
+                            const moveColor = piece.startsWith('w') ? 'white' : 'black';
+                            const heroColor = puzzleState.heroColor || gameState.currentPlayer;
+                            if (moveColor === heroColor) {
+                                return;
+                            }
+                        }
+                    }
+                }
+                const uci = gameState.puzzleSolution.shift();
+                removeHintHighlights();
+                puzzleState.autoPlaying = true;
+                const executed = executePuzzleMove(uci);
+                puzzleState.autoPlaying = false;
+                if (!executed) {
+                    console.warn('Unable to auto-play puzzle move', uci);
+                    gameState.puzzleSolution.unshift(uci);
+                } else {
+                    gameState.currentPlayer = puzzleState.heroColor;
+                }
+            }
+
+            function ensureBoardReady() {
+                const chessboard = document.getElementById('chessboard');
+                if (!chessboard) return;
+                const hasSquares = chessboard.children && chessboard.children.length > 0;
+                if (!hasSquares || !gameState.board || !gameState.board.length) {
+                    initializeBoard();
+                }
+            }
+
+            function getHintCoordinates() {
+                if (!gameState.puzzleSolution || !gameState.puzzleSolution.length) return null;
+                const nextMove = gameState.puzzleSolution[0];
+                const coords = uciToCoords(nextMove);
+                if (!coords) return null;
+                return coords;
+            }
+
+            function determinePuzzleHeroColor() {
+                if (!Array.isArray(gameState.puzzleSolution) || !gameState.puzzleSolution.length) {
+                    if (gameState.currentPlayer === 'white') return 'black';
+                    if (gameState.currentPlayer === 'black') return 'white';
+                    return puzzleState.heroColor || 'white';
+                }
+                for (let idx = 0; idx < gameState.puzzleSolution.length; idx += 1) {
+                    const move = gameState.puzzleSolution[idx];
+                    const coords = uciToCoords(move);
+                    if (!coords) continue;
+                    const piece = gameState.board?.[coords.fr]?.[coords.fc] || '';
+                    if (!piece) continue;
+                    if (piece.startsWith('w')) return 'black';
+                    if (piece.startsWith('b')) return 'white';
+                }
+                if (gameState.currentPlayer === 'white') return 'black';
+                if (gameState.currentPlayer === 'black') return 'white';
+                return puzzleState.heroColor || 'white';
+            }
+
+            function showPuzzleHint() {
+                if (!puzzleState.active || puzzleState.autoPlaying || !gameState.puzzleSolution || !gameState.puzzleSolution.length) {
+                    return;
+                }
+                puzzleState.usedHint = true;
+                const coords = getHintCoordinates();
+                if (!coords) return;
+                if (!gameState.hintStage) {
+                    removeHintHighlights();
+                    highlightSquare(coords.fr, coords.fc, 'hint-highlight-piece');
+                    gameState.hintStage = 1;
+                    gameState.hintCoords = coords;
+                    setPuzzleStatus('Hint: consider this piece');
+                } else if (gameState.hintStage === 1) {
+                    removeHintHighlights();
+                    highlightSquare(coords.fr, coords.fc, 'hint-highlight-piece');
+                    highlightSquare(coords.tr, coords.tc, 'hint-highlight-target');
+                    gameState.hintStage = 2;
+                    gameState.hintCoords = coords;
+                    setPuzzleStatus('Hint: move this piece here');
+                } else {
+                    removeHintHighlights();
+                    setPuzzleStatus('Hints cleared – give it a try');
+                }
+            }
+
+            function uciToCoords(uci) {
+                if (!uci || uci.length < 4) return null;
+                const files = 'abcdefgh';
+                const fromFile = files.indexOf(uci[0]);
+                const fromRank = parseInt(uci[1], 10);
+                const toFile = files.indexOf(uci[2]);
+                const toRank = parseInt(uci[3], 10);
+                if (fromFile < 0 || toFile < 0 || isNaN(fromRank) || isNaN(toRank)) return null;
+                const fr = 8 - fromRank;
+                const fc = fromFile;
+                const tr = 8 - toRank;
+                const tc = toFile;
+                if (!isInBounds(fr, fc) || !isInBounds(tr, tc)) return null;
+                const promotion = uci[4] ? uci[4].toLowerCase() : null;
+                return { fr, fc, tr, tc, promotion };
+            }
+
+            function moveToUci(fr, fc, tr, tc, promotion) {
+                const files = 'abcdefgh';
+                const from = `${files[fc]}${8 - fr}`;
+                const to = `${files[tc]}${8 - tr}`;
+                return `${from}${to}${promotion ? promotion.toLowerCase() : ''}`;
+            }
+
+            function findMoveMatchingUci(uci) {
+                const coords = uciToCoords(uci);
+                if (!coords) return null;
+                const piece = gameState.board[coords.fr][coords.fc];
+                if (!piece) return null;
+                const rawMoves = calculateValidMoves(coords.fr, coords.fc);
+                const legal = rawMoves.filter(([r, c, ep]) => !leavesKingInCheck(coords.fr, coords.fc, r, c, ep));
+                const match = legal.find(([r, c]) => r === coords.tr && c === coords.tc);
+                if (!match) return null;
+                return {
+                    fr: coords.fr,
+                    fc: coords.fc,
+                    tr: coords.tr,
+                    tc: coords.tc,
+                    promo: coords.promotion,
+                };
+            }
+
+            function executePuzzleMove(uci) {
+                const move = findMoveMatchingUci(uci);
+                if (!move) return false;
+                const prevReplayMode = gameState.replayMode;
+                const prevReplayPromotion = gameState.replayPromotionChoice;
+                const prevExecuting = gameState.executingPGN;
+                gameState.executingPGN = true;
+                gameState.replayMode = true;
+                if (move.promo) {
+                    gameState.replayPromotionChoice = move.promo;
+                } else {
+                    gameState.replayPromotionChoice = null;
+                }
+                try {
+                    movePiece(move.fr, move.fc, move.tr, move.tc);
+                } finally {
+                    gameState.executingPGN = prevExecuting;
+                    gameState.replayMode = prevReplayMode;
+                    gameState.replayPromotionChoice = prevReplayPromotion;
+                }
+                return true;
+            }
+
+            async function fetchPuzzle(options = {}) {
+                if (puzzleState.inFlight) return;
+                if (puzzleState.active && !puzzleState.attemptRecorded && puzzleState.currentPuzzleId) {
+                    const abandonReason = options.id ? 'abandoned-before-review' : 'abandoned-new-puzzle';
+                    finalizeCurrentPuzzleAttempt({ success: false, reason: abandonReason });
+                }
+                const btn = document.getElementById('puzzleRefresh');
+                const loadBtn = document.getElementById('puzzleLoadBoard');
+                const copyBtn = document.getElementById('puzzleCopyFen');
+                [btn, loadBtn, copyBtn].forEach(el => el.setAttribute('disabled', 'disabled'));
+                const reviewBtn = document.getElementById('puzzleReview');
+                if (reviewBtn) reviewBtn.setAttribute('disabled', 'disabled');
+                puzzleState.inFlight = true;
+                hidePuzzleSuccess();
+                setPuzzleStatus('Fetching puzzle...');
+
+                try {
+                    const baseUrl = puzzleState.backendBase.replace(/\/$/, '');
+                    if (options.id) {
+                        const endpoint = `${baseUrl}/puzzles/${encodeURIComponent(options.id)}`;
+                        const res = await fetch(endpoint, { headers: { 'Accept': 'application/json' } });
+                        if (!res.ok) {
+                            throw new Error(`Puzzle ${options.id} not found (status ${res.status})`);
+                        }
+                        const data = await res.json();
+                        if (!data || !data.id) {
+                            throw new Error('No puzzle returned');
+                        }
+                        resetBoardForPuzzle();
+                        updatePuzzleDetails(data, { reviewEntry: options.useExistingQueueEntry || null });
+                        if (puzzleState.reviewMode) {
+                            setPuzzleStatus('Review mode: replay the solution without mistakes');
+                        }
+                        return;
+                    }
+
+                    const baseRating = Number.isFinite(puzzleState.playerRating)
+                        ? Math.round(puzzleState.playerRating)
+                        : 1500;
+                    let windowSize = Number.isFinite(options.ratingWindow)
+                        ? Math.max(0, Math.round(options.ratingWindow))
+                        : 100;
+                    let ratingMin = Number.isFinite(options.ratingMin)
+                        ? Math.round(options.ratingMin)
+                        : baseRating - windowSize;
+                    let ratingMax = Number.isFinite(options.ratingMax)
+                        ? Math.round(options.ratingMax)
+                        : baseRating + windowSize;
+
+                    let lastError = null;
+                    let lastResponse = null;
+                    for (let attempts = 0; attempts < 6; attempts += 1) {
+                        const params = new URLSearchParams();
+                        const minClamp = Math.max(0, ratingMin);
+                        const maxClamp = Math.max(minClamp, ratingMax);
+                        params.set('ratingMin', `${minClamp}`);
+                        params.set('ratingMax', `${maxClamp}`);
+                        if (options.theme) params.set('theme', options.theme);
+
+                        const endpoint = `${baseUrl}/puzzles/random?${params}`;
+                        const res = await fetch(endpoint, { headers: { 'Accept': 'application/json' } });
+                        lastResponse = res;
+                        if (!res.ok) {
+                            lastError = new Error(`Backend responded ${res.status}`);
+                        } else {
+                            const data = await res.json();
+                            if (data && data.id) {
+                                resetBoardForPuzzle();
+                                updatePuzzleDetails(data);
+                                lastError = null;
+                                break;
+                            }
+                            lastError = new Error('No puzzle returned');
+                        }
+
+                        const prevWindow = Math.max(
+                            windowSize,
+                            Math.round((Math.abs(ratingMax - ratingMin)) / 2)
+                        );
+                        windowSize = nextRatingWindowSize(prevWindow);
+                        ratingMin = baseRating - windowSize;
+                        ratingMax = baseRating + windowSize;
+                    }
+
+                    if (lastError) {
+                        if (lastResponse && lastResponse.ok) {
+                            throw new Error('No puzzles found near your rating. Try again later.');
+                        }
+                        throw lastError;
+                    }
+                } catch (err) {
+                    console.error('Failed to load puzzle', err);
+                    setPuzzleStatus(`Failed to load puzzle: ${err.message}`, true);
+                    const details = document.getElementById('puzzleDetails');
+                    if (details) details.classList.add('hidden');
+                    hidePuzzleBoard();
+                    if (options.id && options.useExistingQueueEntry && options.useExistingQueueEntry.id) {
+                        queuePuzzleForReview(options.useExistingQueueEntry);
+                    }
+                    if (options.id) {
+                        puzzleState.reviewMode = false;
+                        puzzleState.reviewActiveEntry = null;
+                    }
+                } finally {
+                    puzzleState.inFlight = false;
+                    [btn, loadBtn, copyBtn, reviewBtn].forEach(el => el.removeAttribute('disabled'));
+                }
+            }
+
+            async function copyPuzzleFen() {
+                if (!puzzleState.lastPuzzle || !puzzleState.lastPuzzle.fen) return;
+                try {
+                    await navigator.clipboard.writeText(puzzleState.lastPuzzle.fen);
+                    setPuzzleStatus('FEN copied to clipboard');
+                } catch (err) {
+                    setPuzzleStatus('Unable to copy FEN', true);
+                }
+            }
+
+            function openPuzzleInAnalysis({ engine = false } = {}) {
+                if (!puzzleState.lastPuzzle) return;
+                const currentFen = generateFEN();
+                const currentMoves = (gameState.moveHistory || []).map(move => move.notation).filter(Boolean);
+                pendingAnalysisLoad = {
+                    fen: currentFen,
+                    pgn: (gameState.moveHistory || []).length ? buildPGN() : null,
+                    engine,
+                };
+                puzzleState.active = false;
+                puzzleState.autoPlaying = false;
+                hidePuzzleSuccess();
+                removeHintHighlights();
+                const targetHash = engine ? '#analysis-engine' : '#analysis';
+                const shouldReplace = window.location.hash !== targetHash;
+                navigateToAnalysis({ engine, replaceHash: shouldReplace });
+            }
+
+            function navigateToAnalysis({ engine = false, replaceHash = false } = {}) {
+                const targetHash = engine ? '#analysis-engine' : '#analysis';
+                if (replaceHash) {
+                    history.replaceState(null, '', targetHash);
+                    showAnalysis({ enableEngine: engine });
+                    return;
+                }
+                if (window.location.hash !== targetHash) {
+                    window.location.hash = targetHash;
+                    return;
+                }
+                showAnalysis({ enableEngine: engine });
+            }
+
+            function showPuzzleBoard() {
+                const wrapper = document.getElementById('puzzleBoardWrapper');
+                if (!wrapper) return;
+                const localContainer = document.getElementById('appContainer');
+                if (!localContainer) return;
+                ensureBoardReady();
+                showElement(wrapper);
+                if (!wrapper.contains(localContainer)) {
+                    wrapper.appendChild(localContainer);
+                }
+                showElement(localContainer);
+                const boardControls = document.getElementById('boardControls');
+                hideElement(boardControls);
+                const puzzleControls = document.getElementById('puzzleControls');
+                showElement(puzzleControls);
+                hideElement(getEl('fenPgnTools'));
+                hideElement(getEl('resign'));
+                hideElement(getEl('openInAnalysis'));
+                hideElement(getEl('openInAnalysisEngine'));
+                hideEngineVisuals();
+                hidePgnVariationsContainer();
+            }
+
+            function hidePuzzleBoard() {
+                const wrapper = document.getElementById('puzzleBoardWrapper');
+                if (!wrapper) return;
+                const localContainer = document.getElementById('appContainer');
+                if (!localContainer) return;
+                const wasInWrapper = wrapper.contains(localContainer);
+                if (wasInWrapper) {
+                    wrapper.removeChild(localContainer);
+                    ensureAppContainerInBody();
+                    showElement(localContainer);
+                }
+                hideElement(wrapper);
+            }
+
+            function showPuzzles() {
                 setActiveView('puzzles');
                 hideElement(startScreen);
                 if (puzzleSection) {
@@ -6095,6 +8022,16 @@
                     ensureBoardReady();
                     removeHintHighlights();
                     showPuzzleBoard();
+                    if (!puzzleState.lastPuzzle) {
+                        fetchPuzzle();
+                    } else if (puzzleState.lastPuzzle.fen) {
+                        resetBoardForPuzzle();
+                        applyPuzzlePosition(puzzleState.lastPuzzle.fen);
+                        if (gameState.puzzleSolution && gameState.puzzleSolution.length) {
+                            playPuzzleLeadMove();
+                        }
+                        setPuzzleStatus('Your turn – find the best move');
+                    }
                 }
                 if (appContainer) {
                     ensureAppContainerInBody();
