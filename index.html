@@ -5111,10 +5111,14 @@
             function sendOnlineMessage(data) {
                 if (!data || typeof data !== 'object') return;
                 if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) {
+                    console.debug('[online] queue message', data?.type, {
+                        readyState: onlineState.socket ? onlineState.socket.readyState : 'no-socket',
+                    });
                     onlineState.pendingMessages.push(data);
                     return;
                 }
                 try {
+                    console.debug('[online] send', data.type, data);
                     onlineState.socket.send(JSON.stringify(data));
                 } catch (err) {
                     console.warn('Failed to send message', err);
@@ -5122,7 +5126,17 @@
             }
 
             function sendOnlineMove(fr, fc, tr, tc, promotion) {
-                if (!onlineState.inGame || onlineState.turn !== onlineState.assignedColor) return;
+                if (!onlineState.inGame) {
+                    console.debug('[online] skip send - not in game');
+                    return;
+                }
+                if (onlineState.turn !== onlineState.assignedColor) {
+                    console.debug('[online] skip send - wrong turn', {
+                        turn: onlineState.turn,
+                        assigned: onlineState.assignedColor,
+                    });
+                    return;
+                }
                 const uci = moveToUci(fr, fc, tr, tc, promotion);
                 onlineState.awaitingAckUci = uci;
                 sendOnlineMessage({
